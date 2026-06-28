@@ -1,0 +1,1585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Auction Radar — Collector Car Intelligence</title>
+<meta name="description" content="One calendar for every important collector car coming to auction. Scan upcoming lots across the major houses and online platforms." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --paper:#efece5;     /* gallery wall */
+    --plate:#fbfaf6;     /* print paper / cards */
+    --plate-2:#f6f4ee;   /* faint panel */
+    --ink:#211e18;
+    --ink-2:#4a463f;
+    --muted:#8a8478;
+    --muted-2:#aba493;
+    --rule:#dcd6ca;
+    --rule-soft:#e9e4d9;
+    --claret:#7e2230;
+    --claret-deep:#5e1722;
+    --brass:#9c7c3c;
+    --brass-soft:#bfa46a;
+    --good:#5f7348;
+    --radius:3px;
+    --maxw:1240px;
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 560px at 82% -12%, rgba(156,124,60,.06), transparent 62%),
+      var(--paper);
+    color:var(--ink);
+    font-family:"Hanken Grotesk",system-ui,sans-serif;
+    font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  button{font-family:inherit;cursor:pointer;color:inherit}
+  ::selection{background:rgba(126,34,48,.16);color:var(--ink)}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 26px}
+
+  /* ---------- command bar ---------- */
+  .command{position:sticky;top:0;z-index:40;background:rgba(239,236,229,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
+  .command .wrap{display:flex;align-items:center;gap:20px;min-height:64px}
+  .brand{display:flex;align-items:center;gap:12px;margin-right:auto}
+  .aperture{width:26px;height:26px;flex:none}
+  .aperture svg{display:block;width:100%;height:100%}
+  .brand b{font-family:"Spectral",serif;font-weight:600;font-size:20px;letter-spacing:.16em;text-transform:uppercase;line-height:1;color:var(--ink)}
+  .brand b span{color:var(--claret)}
+  .brand small{display:block;font-size:9.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--muted);margin-top:4px;font-weight:600}
+  .status-clock{display:flex;align-items:center;gap:9px;font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 0 rgba(156,124,60,.5);animation:pulse 2.6s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(156,124,60,.45)}70%{box-shadow:0 0 0 6px rgba(156,124,60,0)}100%{box-shadow:0 0 0 0 rgba(156,124,60,0)}}
+  .watch-btn{display:flex;align-items:center;gap:8px;border:1px solid var(--rule);background:var(--plate);border-radius:var(--radius);padding:8px 13px;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);transition:border-color .15s,color .15s}
+  .watch-btn:hover{border-color:var(--claret);color:var(--claret)}
+  .watch-btn .star{color:var(--claret)}
+  .watch-btn .n{font-weight:700;font-variant-numeric:tabular-nums}
+
+  /* ---------- hero ---------- */
+  .hero{border-bottom:1px solid var(--rule)}
+  .hero .wrap{padding-top:56px;padding-bottom:40px}
+  .eyebrow{font-size:10.5px;letter-spacing:.32em;text-transform:uppercase;color:var(--claret);font-weight:600;margin-bottom:22px;display:flex;align-items:center;gap:14px}
+  .eyebrow::after{content:"";height:1px;flex:1;max-width:160px;background:linear-gradient(90deg,var(--brass-soft),transparent)}
+  .hero h1{font-family:"Spectral",serif;font-weight:500;font-size:clamp(36px,6.2vw,66px);line-height:1.02;letter-spacing:-.01em;margin:0 0 20px;max-width:16ch;color:var(--ink)}
+  .hero h1 em{font-style:italic;color:var(--claret)}
+  .hero .sub{color:var(--ink-2);max-width:58ch;font-size:16.5px;line-height:1.6}
+
+  /* sale-at-a-glance index */
+  .gauges{display:flex;flex-wrap:wrap;margin-top:42px;background:var(--plate);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+  .gauge{flex:1 1 0;min-width:120px;padding:20px 22px 18px;position:relative}
+  .gauge + .gauge{border-left:1px solid var(--rule)}
+  .gauge .num{font-family:"Spectral",serif;font-weight:500;font-size:clamp(28px,3.6vw,40px);line-height:1;color:var(--ink);font-variant-numeric:tabular-nums}
+  .gauge.hot .num{color:var(--claret)}
+  .gauge .lab{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-top:10px;font-weight:600}
+  .gauge .tick{display:none}
+
+  /* curated chips */
+  .quick{display:flex;flex-wrap:wrap;gap:9px;margin-top:30px;align-items:center}
+  .quick .lbl{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-right:6px;font-weight:600}
+  .chip{border:1px solid var(--rule);background:var(--plate);border-radius:999px;padding:8px 15px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;color:var(--ink-2);transition:.15s;display:inline-flex;align-items:center;gap:8px}
+  .chip:hover{border-color:var(--claret);color:var(--claret)}
+  .chip.on{background:var(--claret);color:#fbfaf6;border-color:var(--claret)}
+  .chip .dot{width:5px;height:5px;border-radius:50%;background:var(--claret)}
+  .chip.on .dot{background:#fbfaf6}
+
+  /* ---------- controls ---------- */
+  .controls{position:sticky;top:64px;z-index:30;background:rgba(239,236,229,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
+  .controls .wrap{padding-top:16px;padding-bottom:16px}
+  .ctl-grid{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .search{flex:1 1 220px;min-width:180px}
+  .input,.select{background:var(--plate);border:1px solid var(--rule);border-radius:var(--radius);color:var(--ink);padding:10px 12px;font-size:13.5px;font-family:inherit;width:100%;transition:border-color .15s}
+  .select{appearance:none;padding-right:30px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238a8478' stroke-width='1.4'/></svg>");background-repeat:no-repeat;background-position:right 12px center;cursor:pointer}
+  .input:focus,.select:focus{outline:none;border-color:var(--claret);box-shadow:0 0 0 3px rgba(126,34,48,.08)}
+  .input::placeholder{color:var(--muted-2)}
+  .yr{display:flex;align-items:center;gap:7px}
+  .yr input{width:76px;text-align:center}
+  .yr span{color:var(--muted-2);font-size:12px}
+  .toggle{display:inline-flex;align-items:center;gap:9px;border:1px solid var(--rule);background:var(--plate);border-radius:var(--radius);padding:10px 13px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;height:40px;transition:.15s;color:var(--ink-2)}
+  .toggle:hover{border-color:var(--claret)}
+  .toggle.on{border-color:var(--claret);color:var(--claret);background:rgba(126,34,48,.05)}
+  .toggle .box{width:13px;height:13px;border:1.5px solid var(--muted);border-radius:2px;display:inline-block;position:relative}
+  .toggle.on .box{background:var(--claret);border-color:var(--claret)}
+  .toggle.on .box::after{content:"";position:absolute;left:3px;top:0;width:5px;height:8px;border-right:2px solid #fbfaf6;border-bottom:2px solid #fbfaf6;transform:rotate(40deg)}
+  .reset{margin-left:auto;color:var(--muted);background:none;border:none;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;text-decoration:underline;text-underline-offset:3px;align-self:center}
+  .reset:hover{color:var(--claret)}
+
+  /* ---------- results ---------- */
+  main .wrap{padding-top:34px;padding-bottom:72px}
+  .results-head{display:flex;align-items:baseline;gap:16px;margin-bottom:22px;flex-wrap:wrap;border-bottom:1px solid var(--rule);padding-bottom:16px}
+  .results-head h2{font-family:"Spectral",serif;font-weight:500;font-size:26px;letter-spacing:.01em;margin:0;color:var(--ink)}
+  .results-head .count{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .sort{margin-left:auto;display:flex;align-items:center;gap:9px}
+  .sort label{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .sort .select{width:auto;min-width:180px;font-size:12.5px;padding:8px 30px 8px 11px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px}
+
+  .lot{background:var(--plate);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;cursor:pointer;transition:border-color .18s,transform .18s,box-shadow .18s;box-shadow:0 1px 2px rgba(33,30,24,.03)}
+  .lot:hover{border-color:var(--brass-soft);transform:translateY(-4px);box-shadow:0 18px 34px -20px rgba(33,30,24,.28)}
+  .lot:focus-visible{outline:2px solid var(--claret);outline-offset:2px}
+
+  .thumb{height:170px;position:relative;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--rule);
+    background:
+      radial-gradient(58% 26% at 50% 94%, rgba(33,30,24,.10), transparent 72%),
+      linear-gradient(180deg, hsl(var(--hue,210) 14% 94%), hsl(var(--hue,210) 11% 87%) 58%, hsl(var(--hue,210) 9% 90%));}
+  .thumb .marque{font-family:"Spectral",serif;font-weight:500;font-style:italic;font-size:27px;letter-spacing:.02em;color:hsl(var(--hue,210) 24% 42% / .4);text-align:center;padding:0 18px}
+  .plate{position:absolute;top:12px;left:12px;background:rgba(251,250,246,.9);border:1px solid var(--rule);border-top:2px solid var(--brass);border-radius:2px;padding:5px 9px 4px;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--ink)}
+  .badges{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+  .badge{font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;padding:4px 8px;border-radius:2px;display:inline-flex;align-items:center;gap:5px}
+  .badge.nr{color:var(--claret);border:1px solid var(--claret);background:rgba(251,250,246,.85)}
+  .badge.soon{color:var(--ink);background:var(--brass)}
+  .badge.soon .d{width:5px;height:5px;border-radius:50%;background:var(--ink);animation:pulse2 1.5s infinite}
+  @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.3}}
+  .badge.fmt{color:var(--muted);border:1px solid var(--rule);background:rgba(251,250,246,.8)}
+  .star-toggle{position:absolute;bottom:12px;right:12px;width:30px;height:30px;border-radius:50%;background:rgba(251,250,246,.9);border:1px solid var(--rule);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--muted-2);transition:.15s}
+  .star-toggle:hover{border-color:var(--claret);color:var(--claret)}
+  .star-toggle.on{color:var(--claret);border-color:var(--claret);background:rgba(126,34,48,.08)}
+
+  .lot-body{padding:16px 17px 17px;display:flex;flex-direction:column;gap:10px;flex:1}
+  .lot-title{font-family:"Spectral",serif;font-weight:500;font-size:20px;line-height:1.12;letter-spacing:.005em;color:var(--ink)}
+  .lot-title .yr{color:var(--claret);font-weight:500}
+  .lot-meta{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:.06em;color:var(--muted);flex-wrap:wrap;text-transform:uppercase;font-weight:600}
+  .lot-meta .house{color:var(--ink-2)}
+  .dotsep{width:3px;height:3px;border-radius:50%;background:var(--muted-2);flex:none}
+  .lot-foot{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding-top:13px;border-top:1px solid var(--rule)}
+  .price .k{font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;font-weight:600}
+  .price .v{font-family:"Spectral",serif;font-size:17px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums}
+  .price .usd{font-size:10px;color:var(--muted);margin-top:3px}
+  .cd{font-size:11px;letter-spacing:.04em;color:var(--ink-2);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600}
+  .cd.urgent{color:var(--claret)}
+  .cd .k{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;font-weight:600}
+  .src{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+
+  .empty{text-align:center;padding:80px 20px;border:1px solid var(--rule);border-radius:var(--radius);background:var(--plate)}
+  .empty h3{font-family:"Spectral",serif;font-weight:500;font-size:26px;margin:0 0 10px;color:var(--ink)}
+  .empty p{color:var(--muted);margin:0 0 20px}
+  .empty button{border:1px solid var(--claret);background:transparent;color:var(--claret);border-radius:var(--radius);padding:10px 18px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  .empty button:hover{background:var(--claret);color:#fbfaf6}
+
+  /* ---------- detail sheet ---------- */
+  .scrim{position:fixed;inset:0;z-index:60;background:rgba(33,30,24,.4);backdrop-filter:blur(4px);display:none;padding:24px}
+  .scrim.open{display:flex;align-items:flex-start;justify-content:center}
+  .sheet{background:var(--plate);border:1px solid var(--rule);border-radius:5px;width:100%;max-width:740px;margin:44px auto;max-height:calc(100vh - 88px);overflow:auto;position:relative;box-shadow:0 50px 100px -36px rgba(33,30,24,.45)}
+  .sheet-x{position:sticky;top:0;float:right;margin:14px 14px 0;width:34px;height:34px;border-radius:50%;background:var(--plate);border:1px solid var(--rule);font-size:17px;color:var(--ink-2);z-index:2;display:flex;align-items:center;justify-content:center}
+  .sheet-x:hover{border-color:var(--claret);color:var(--claret)}
+  .sheet-hero{height:210px;position:relative;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--rule);
+    background:
+      radial-gradient(54% 24% at 50% 95%, rgba(33,30,24,.12), transparent 72%),
+      linear-gradient(180deg, hsl(var(--hue,210) 15% 95%), hsl(var(--hue,210) 11% 87%) 58%, hsl(var(--hue,210) 9% 90%));}
+  .sheet-hero .marque{font-family:"Spectral",serif;font-style:italic;font-weight:500;font-size:44px;color:hsl(var(--hue,210) 24% 42% / .42)}
+  .sheet-pad{padding:26px 30px 32px}
+  .sheet-pad p{font-family:"Spectral",serif;font-size:16px;line-height:1.6}
+  .sheet h3{font-family:"Spectral",serif;font-weight:500;font-size:32px;line-height:1.08;margin:0 0 8px;color:var(--ink)}
+  .sheet h3 .yr{color:var(--claret)}
+  .sheet .line{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;flex-wrap:wrap;margin-bottom:18px}
+  .sheet .line b{color:var(--ink-2);font-weight:700}
+
+  .price-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .price-card{flex:1;min-width:160px;background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);padding:16px 18px}
+  .price-card.amber{border-left:3px solid var(--claret)}
+  .price-card .k{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-bottom:9px;font-weight:600}
+  .price-card .v{font-family:"Spectral",serif;font-size:23px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums}
+  .price-card .sub{font-size:11px;color:var(--muted);margin-top:5px}
+
+  .sec-h{font-family:"Hanken Grotesk",sans-serif;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--claret);font-weight:700;margin:28px 0 14px;display:flex;align-items:center;gap:12px}
+  .sec-h::after{content:"";flex:1;height:1px;background:var(--rule)}
+  .market-read{margin:6px 0 4px}
+  .mr-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+  .mr-cell{background:var(--panel,#f6f3ec);border:1px solid var(--rule,#ddd6c8);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}
+  .mr-k{font-family:"Hanken Grotesk",sans-serif;font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted,#6b6357)}
+  .mr-v{font-family:"Spectral",serif;font-size:18px;color:var(--ink,#211e18)}
+  .mr-pos{font-size:13px;color:var(--ink,#211e18);padding:10px 14px;border-left:3px solid var(--rule,#ddd6c8);background:rgba(0,0,0,.02);border-radius:0 8px 8px 0}
+  .mr-pos.under{border-left-color:#5f7348}
+  .mr-pos.over{border-left-color:var(--claret,#7e2230)}
+  .mr-pos.even{border-left-color:var(--brass,#9c7c3c)}
+  .mr-note{font-size:13px;color:var(--muted,#6b6357);font-style:italic;margin:2px 0}
+
+  .specs{display:grid;grid-template-columns:repeat(2,1fr);background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+  .spec{padding:13px 16px}
+  .spec:nth-child(odd){border-right:1px solid var(--rule)}
+  .spec:not(:nth-last-child(-n+2)){border-bottom:1px solid var(--rule)}
+  .spec .k{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .spec .v{font-family:"Spectral",serif;font-size:14.5px;color:var(--ink);margin-top:4px}
+
+  .comps{background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+  .comp{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;gap:12px;font-size:13px}
+  .comp:not(:last-child){border-bottom:1px solid var(--rule)}
+  .comp .desc{color:var(--ink-2);font-weight:500;font-family:"Spectral",serif;font-size:15px}
+  .comp .desc small{display:block;color:var(--muted);font-size:10px;margin-top:3px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;font-family:"Hanken Grotesk",sans-serif}
+  .comp .sold{font-family:"Spectral",serif;color:var(--ink);font-weight:500;font-size:15px;white-space:nowrap;font-variant-numeric:tabular-nums}
+
+  .trend{display:flex;align-items:center;gap:20px;background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);padding:16px 18px}
+  .trend svg{flex:none}
+  .trend .read .pct{font-family:"Spectral",serif;font-weight:500;font-size:28px;line-height:1}
+  .trend .read .pct.up{color:var(--good)}
+  .trend .read .pct.down{color:var(--claret)}
+  .trend .read .cap{font-size:11px;color:var(--muted);margin-top:5px;letter-spacing:.04em}
+
+  .similar{display:flex;flex-direction:column;gap:8px}
+  .sim{display:flex;align-items:center;gap:13px;background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);padding:11px 13px;text-align:left;width:100%;transition:border-color .15s}
+  .sim:hover{border-color:var(--claret)}
+  .sim .sw{width:38px;height:38px;border-radius:2px;flex:none;background:linear-gradient(160deg, hsl(var(--hue,210) 16% 90%), hsl(var(--hue,210) 12% 80%));border:1px solid var(--rule)}
+  .sim .t{font-family:"Spectral",serif;font-size:15px;color:var(--ink)}
+  .sim .m{font-size:9.5px;color:var(--muted);margin-top:2px;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+  .sim .go{margin-left:auto;color:var(--muted);font-size:17px}
+  .sim:hover .go{color:var(--claret)}
+
+  .sheet-actions{display:flex;gap:11px;margin-top:28px;flex-wrap:wrap}
+  .btn{flex:1;min-width:160px;border-radius:var(--radius);padding:14px 16px;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;text-align:center;transition:.15s;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+  .btn.primary{background:var(--claret);color:#fbfaf6;border:1px solid var(--claret)}
+  .btn.primary:hover{background:var(--claret-deep);border-color:var(--claret-deep)}
+  .btn.ghost{background:transparent;color:var(--ink-2);border:1px solid var(--rule)}
+  .btn.ghost:hover{border-color:var(--claret);color:var(--claret)}
+  .btn.ghost.on{border-color:var(--claret);color:var(--claret);background:rgba(126,34,48,.06)}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--rule);background:var(--plate-2)}
+  footer .wrap{padding:48px 26px 56px}
+  .foot-lead{font-family:"Spectral",serif;font-weight:500;font-size:clamp(24px,3.2vw,34px);letter-spacing:0;max-width:24ch;margin:0 0 26px;line-height:1.12;color:var(--ink)}
+  .foot-lead em{color:var(--claret);font-style:italic}
+  .sources{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:28px}
+  .sources a{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;border:1px solid var(--rule);border-radius:999px;padding:7px 13px;color:var(--muted);background:var(--plate);transition:.15s}
+  .sources a:hover{border-color:var(--claret);color:var(--claret)}
+  .note{font-size:12px;color:var(--muted);max-width:82ch;line-height:1.65;border-top:1px solid var(--rule);padding-top:22px}
+  .note b{color:var(--ink-2)}
+  .foot-meta{margin-top:20px;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-weight:600}
+
+  /* ---------- load anim ---------- */
+  .fade{opacity:0;transform:translateY(8px);animation:rise .55s forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+
+  /* ---------- responsive ---------- */
+  @media(max-width:880px){
+    .gauge{flex-basis:33.33%;min-width:0}
+    .gauge:nth-child(n+4){border-top:1px solid var(--rule)}
+    .gauge:nth-child(4){border-left:none}
+  }
+  @media(max-width:620px){
+    .wrap{padding:0 18px}
+    .command .wrap{gap:12px}
+    .brand small{display:none}
+    .status-clock{display:none}
+    .gauge{flex-basis:50%}
+    .gauge:nth-child(odd){border-left:none}
+    .gauge:nth-child(n+3){border-top:1px solid var(--rule)}
+    .ctl-grid{flex-direction:column;align-items:stretch}
+    .field,.search,.sort .select{width:100%}
+    .reset{margin-left:0;align-self:flex-start}
+    .grid{grid-template-columns:1fr}
+    .specs{grid-template-columns:1fr}
+    .spec:nth-child(odd){border-right:none}
+    .spec:not(:last-child){border-bottom:1px solid var(--rule)}
+    .scrim{padding:0}
+    .sheet{margin:0;border-radius:0;max-height:100vh;min-height:100vh}
+  }
+
+  @media(prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+    .fade{opacity:1;transform:none}
+  }
+
+  /* ---------- auth ---------- */
+  .auth-btn{border:1px solid var(--rule);background:var(--plate);border-radius:var(--radius);padding:8px 13px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-2);transition:.15s;max-width:min(42vw,210px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .auth-btn:hover{border-color:var(--claret);color:var(--claret)}
+  .auth-btn.signed{text-transform:none;letter-spacing:.01em}
+  .auth-sheet{max-width:440px}
+  .auth-pad{padding:30px 30px 32px}
+  .auth-h{font-family:"Spectral",serif;font-weight:500;font-size:28px;margin:0 0 10px;color:var(--ink)}
+  .auth-sub{color:var(--ink-2);font-size:14px;line-height:1.55;margin:0 0 20px}
+  .auth-input{margin-bottom:12px;font-size:15px;padding:12px 14px}
+  .auth-send{width:100%}
+  .auth-msg{font-size:12.5px;margin:14px 0 0;min-height:1em;line-height:1.5}
+
+  /* ---------- saved searches / alerts ---------- */
+  .alerts-btn{align-self:center;margin-left:4px;border:1px solid var(--rule);background:var(--plate);border-radius:var(--radius);padding:7px 13px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-2);transition:.15s}
+  .alerts-btn:hover{border-color:var(--claret);color:var(--claret)}
+  .alert-lab{display:block;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:6px 0 5px}
+  .alert-summary-line{font-size:12px;color:var(--muted);margin:10px 0 16px;line-height:1.5}
+  .alert-summary-line span{color:var(--ink-2);font-weight:500}
+  .alert-list-head{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--claret);font-weight:700;margin:26px 0 10px;padding-top:18px;border-top:1px solid var(--rule)}
+  .qrow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--rule-soft)}
+  .qinfo{flex:1;min-width:0}
+  .qname{font-family:"Spectral",serif;font-size:15px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qsub{font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qdel{flex:none;width:26px;height:26px;border-radius:50%;border:1px solid var(--rule);background:var(--plate);color:var(--muted);font-size:13px;line-height:1}
+  .qdel:hover{border-color:var(--claret);color:var(--claret)}
+  .alert-empty{font-size:13px;color:var(--muted);padding:10px 0;line-height:1.5}
+
+  /* ---------- listing images (CSS placeholder shows through as fallback) ---------- */
+  .thumb-img,.sheet-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1;background:var(--plate-2);animation:imgIn .35s ease}
+  @keyframes imgIn{from{opacity:0}to{opacity:1}}
+  .thumb .marque,.sheet-hero .marque{position:relative;z-index:0}
+  .thumb .plate,.thumb .badges,.thumb .star-toggle{z-index:2}
+
+  /* ---------- per-lot live discussion ---------- */
+  .chat{margin-top:4px}
+  .chat-signin{width:100%;border:1px solid var(--claret);background:transparent;color:var(--claret);border-radius:var(--radius);padding:12px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:600}
+  .chat-signin:hover{background:rgba(126,34,48,.06)}
+  .chat-msgs{max-height:260px;overflow-y:auto;border:1px solid var(--rule);border-radius:var(--radius);background:var(--plate-2);padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+  .chat-empty{font-size:13px;color:var(--muted);text-align:center;margin:14px 0}
+  .chat-msg{max-width:88%}
+  .chat-msg.mine{align-self:flex-end;text-align:right}
+  .chat-meta{display:flex;gap:8px;align-items:baseline;margin-bottom:3px}
+  .chat-msg.mine .chat-meta{justify-content:flex-end}
+  .chat-author{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--claret)}
+  .chat-msg.mine .chat-author{color:var(--brass)}
+  .chat-time{font-size:10px;color:var(--muted-2)}
+  .chat-body{font-size:14px;line-height:1.45;color:var(--ink);background:var(--plate);border:1px solid var(--rule);border-radius:8px;padding:8px 11px;display:inline-block;text-align:left;word-break:break-word}
+  .chat-msg.mine .chat-body{background:#fbf3f0;border-color:#e8d6d4}
+  .chat-input{display:flex;gap:8px;margin-top:10px}
+  .chat-text{flex:1}
+  .chat-send{min-width:90px;padding:10px 14px}
+
+  /* ---------- live update flash ---------- */
+  @keyframes flashGlow{0%{box-shadow:inset 0 0 0 9999px rgba(156,124,60,.22)}100%{box-shadow:inset 0 0 0 9999px rgba(156,124,60,0)}}
+  .flash{animation:flashGlow 1.1s ease}
+
+  .chat-presence{display:inline-flex;align-items:center;gap:6px;margin-left:6px;font-size:10px;letter-spacing:.06em;text-transform:none;color:var(--muted);font-weight:600;vertical-align:middle}
+  .chat-report{margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;opacity:.4;padding:0 2px;line-height:1}
+  .chat-report:hover{opacity:1;color:var(--claret)}
+  .chat-report.done{opacity:.7;font-size:9px;letter-spacing:.06em;text-transform:uppercase;cursor:default}
+  .chat-warn{color:var(--claret);font-weight:700}
+  .chat-err{font-size:12px;color:var(--claret);background:#fbf3f0;border:1px solid #e8d6d4;border-radius:8px;padding:6px 10px;margin:6px 0;text-align:center}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<header class="command">
+  <div class="wrap">
+    <div class="brand">
+      <span class="aperture" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="#7e2230" stroke-width="1.6"/>
+          <circle cx="16" cy="16" r="3.4" fill="#7e2230"/>
+          <path d="M16 2v6M16 24v6M2 16h6M24 16h6" stroke="#cdc6b8" stroke-width="1.4"/>
+          <path d="M16 5l9.5 16.5M16 5L6.5 21.5M27 16H5" stroke="#9c7c3c" stroke-width="1" opacity=".5"/>
+        </svg>
+      </span>
+      <span>
+        <b>AUCTION&nbsp;<span>RADAR</span></b>
+        <small>Curator of Speed · Collector Intel</small>
+      </span>
+    </div>
+    <div class="status-clock">
+      <span class="live-dot"></span>
+      <span>Scanning 11 sources · <span id="clock">—</span></span>
+    </div>
+    <button class="auth-btn" id="authBtn" hidden>Sign in</button>
+    <button class="watch-btn" id="watchBar" aria-label="View watchlist">
+      <span class="star">★</span> Watchlist <span class="n" id="watchN">0</span>
+    </button>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Every house · every platform · one feed</div>
+    <h1 class="fade">Catch the car <em>before the hammer.</em></h1>
+    <p class="sub fade">Track every collector car coming to auction across the major houses and online blocks — filter by what you actually chase, then click straight through to the source.</p>
+
+    <div class="gauges" id="gauges" aria-label="Live market summary">
+      <div class="gauge"><div class="num" id="g-lots">0</div><div class="lab">Upcoming lots</div><div class="tick"><i style="width:100%"></i></div></div>
+      <div class="gauge"><div class="num" id="g-houses">0</div><div class="lab">Auction houses</div><div class="tick"><i style="width:84%"></i></div></div>
+      <div class="gauge"><div class="num" id="g-nr">0</div><div class="lab">No-reserve</div><div class="tick"><i style="width:46%"></i></div></div>
+      <div class="gauge hot"><div class="num" id="g-today">0</div><div class="lab">Ending today</div><div class="tick"><i style="width:28%"></i></div></div>
+      <div class="gauge"><div class="num" id="g-week">0</div><div class="lab">Ending this week</div><div class="tick"><i style="width:62%"></i></div></div>
+    </div>
+
+    <div class="quick" id="quick">
+      <span class="lbl">Curated:</span>
+      <button class="chip" data-q="nr-soon"><span class="dot"></span>No-reserve ending soon</button>
+      <button class="chip" data-q="ferrari">Ferraris</button>
+      <button class="chip" data-q="porsche">Porsches</button>
+      <button class="chip" data-q="race">Race &amp; competition</button>
+      <button class="chip" data-q="monterey">Monterey week</button>
+      <button class="chip" data-q="online-today">Online ending today</button>
+    </div>
+  </div>
+</section>
+
+<section class="controls">
+  <div class="wrap">
+    <div class="ctl-grid">
+      <div class="field search">
+        <label for="q">Search</label>
+        <input class="input" id="q" type="search" placeholder="Make, model, year, chassis…" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="make">Make</label>
+        <select class="select" id="make"><option value="">All makes</option></select>
+      </div>
+      <div class="field">
+        <label for="house">Auction house</label>
+        <select class="select" id="house"><option value="">All houses</option></select>
+      </div>
+      <div class="field">
+        <label for="cat">Category</label>
+        <select class="select" id="cat">
+          <option value="">All categories</option>
+          <option value="Race">Race</option>
+          <option value="Supercar">Supercar</option>
+          <option value="Classic">Classic</option>
+          <option value="Modern">Modern collectible</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Year</label>
+        <div class="yr">
+          <input class="input" id="ymin" type="number" inputmode="numeric" placeholder="1920" aria-label="Year from" />
+          <span>–</span>
+          <input class="input" id="ymax" type="number" inputmode="numeric" placeholder="2026" aria-label="Year to" />
+        </div>
+      </div>
+      <div class="field" style="justify-content:end">
+        <label>&nbsp;</label>
+        <button class="toggle" id="nrToggle" aria-pressed="false"><span class="box"></span>No reserve</button>
+      </div>
+      <div class="field" style="justify-content:end">
+        <label for="fmt">Format</label>
+        <select class="select" id="fmt">
+          <option value="">Online &amp; live</option>
+          <option value="online">Online block</option>
+          <option value="live">Live event</option>
+        </select>
+      </div>
+      <button class="reset" id="reset">Reset filters</button>
+    </div>
+  </div>
+</section>
+
+<main>
+  <div class="wrap">
+    <div class="results-head">
+      <h2>Lots</h2>
+      <span class="count" id="resCount">—</span>
+      <button class="alerts-btn" id="alertsBtn" hidden>Save as alert</button>
+      <div class="sort">
+        <label for="sort">Sort</label>
+        <select class="select" id="sort">
+          <option value="soon">Ending soonest</option>
+          <option value="high">Estimate / bid: high → low</option>
+          <option value="low">Estimate / bid: low → high</option>
+          <option value="year-new">Year: newest</option>
+          <option value="year-old">Year: oldest</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" style="display:none">
+      <h3>No lots match</h3>
+      <p>Nothing on the block fits those filters right now. Widen the net to see what's coming up.</p>
+      <button id="emptyReset">Clear filters</button>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="foot-lead">One calendar for every important collector car <em>coming to auction.</em></p>
+    <div class="sources" id="sources"></div>
+    <p class="note" id="modeNote">
+      <b>Demo build.</b> Lots shown here are realistic sample data structured to the production schema — not a live feed yet. The radar links back to each auction house and never rehosts catalogs: per source terms it should surface only year / make / model, house, date, location, public estimate or bid, reserve status, a single placeholder, and a short summary, then drive the click to the original listing. Wire it to Supabase + the source workers to go live.
+    </p>
+    <div class="foot-meta">
+      <span>Single-file HTML</span><span class="dotsep"></span><span>GitHub → Vercel → Cloudflare</span><span class="dotsep"></span><span id="seed">SEED v0.1</span>
+    </div>
+  </div>
+</footer>
+
+<div class="scrim" id="alertsScrim" role="dialog" aria-modal="true" aria-label="Saved searches">
+  <div class="sheet auth-sheet">
+    <button class="sheet-x" id="alertsX" aria-label="Close">✕</button>
+    <div class="auth-pad">
+      <div class="eyebrow" style="margin-bottom:16px">Alerts</div>
+      <h3 class="auth-h">Save this search</h3>
+      <p class="auth-sub">We'll email you when a matching car is listed or is about to close. Captured from your current filters — add a price ceiling if you like.</p>
+      <label class="alert-lab" for="alertLabel">Name</label>
+      <input class="input auth-input" id="alertLabel" type="text" placeholder="My alert" />
+      <label class="alert-lab" for="alertPrice">Max price (USD, optional)</label>
+      <input class="input auth-input" id="alertPrice" type="text" inputmode="numeric" placeholder="e.g. 300000" />
+      <p class="alert-summary-line">Matches: <span id="alertSummary">all upcoming lots</span></p>
+      <button class="btn primary auth-send" id="alertCreate">Create alert</button>
+      <p class="auth-msg" id="alertMsg"></p>
+      <div class="alert-list-head">Your saved searches <span id="queryCount"></span></div>
+      <div id="queryList"></div>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="authScrim" role="dialog" aria-modal="true" aria-label="Sign in">
+  <div class="sheet auth-sheet">
+    <button class="sheet-x" id="authX" aria-label="Close">✕</button>
+    <div class="auth-pad">
+      <div class="eyebrow" style="margin-bottom:16px">Auction Radar account</div>
+      <h3 class="auth-h">Save your watchlist</h3>
+      <p class="auth-sub">Sign in with a magic link — no password. We'll keep your watched cars across devices and (soon) alert you before they cross the block.</p>
+      <input class="input auth-input" id="authEmail" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email" />
+      <button class="btn primary auth-send" id="authSend">Send magic link</button>
+      <p class="auth-msg" id="authMsg"></p>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim" role="dialog" aria-modal="true" aria-label="Lot detail">
+  <div class="sheet" id="sheet">
+    <button class="sheet-x" id="sheetX" aria-label="Close">✕</button>
+    <div id="sheetContent"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   AUCTION RADAR — demo data layer
+   Each record maps to the production `auction_lots` schema.
+   `closes` is computed at load so the demo always reads live.
+   ============================================================ */
+
+const HOUSES = {
+  "RM Sotheby's":        "https://rmsothebys.com",
+  "Gooding Christie's":  "https://www.goodingco.com",
+  "Bonhams Cars":        "https://cars.bonhams.com",
+  "Mecum":               "https://www.mecum.com",
+  "Barrett-Jackson":     "https://www.barrett-jackson.com",
+  "Broad Arrow":         "https://www.broadarrowauctions.com",
+  "Bring a Trailer":     "https://bringatrailer.com",
+  "Cars & Bids":         "https://carsandbids.com",
+  "PCARMARKET":          "https://www.pcarmarket.com",
+  "Collecting Cars":     "https://collectingcars.com",
+  "Sotheby's Motorsport":"https://www.sothebys.com"
+};
+
+const HUE = {Ferrari:6,Porsche:208,Lamborghini:32,McLaren:24,"Mercedes-Benz":205,BMW:206,
+  "Aston Martin":150,Jaguar:128,Ford:212,Chevrolet:214,Lancia:348,Pagani:268,Bugatti:220,
+  Shelby:8,"Alfa Romeo":2,Nissan:194,Audi:0,Lotus:92,Toyota:0,Alpine:214};
+
+/* h = hours from now (online) ; d = days from now (live event) */
+const RAW = [
+  // ---- live-event lots (estimate ranges) ----
+  {n:"S142",y:1961,mk:"Ferrari",md:"250 GT SWB Berlinetta",tr:"Competizione",cat:"Classic",house:"RM Sotheby's",ev:"Monterey",loc:"Monterey, CA",cur:"USD",lo:8500000,hi:10500000,res:"reserve",fmt:"live",d:24,ch:"2845GT",eng:"3.0L Colombo V12",tx:"4-spd manual",mi:"—",blurb:"Matching-numbers SWB with period race history; one of the most coveted shapes in Maranello's catalogue."},
+  {n:"S118",y:1970,mk:"Porsche",md:"917K",tr:"Works",cat:"Race",house:"Gooding Christie's",ev:"Pebble Beach",loc:"Pebble Beach, CA",cur:"USD",lo:14000000,hi:18000000,res:"reserve",fmt:"live",d:24,ch:"917-024",eng:"4.9L flat-12",tx:"5-spd",mi:"—",blurb:"Le Mans-era 917 in works livery — the car that defined Porsche's first overall Le Mans win generation."},
+  {n:"L079",y:1995,mk:"McLaren",md:"F1",tr:"",cat:"Supercar",house:"Bonhams Cars",ev:"London Auction",loc:"London, UK",cur:"USD",lo:18000000,hi:22000000,res:"reserve",fmt:"live",d:16,ch:"065",eng:"6.1L BMW V12",tx:"6-spd manual",mi:"9,400 mi",blurb:"Central driving position, gold-lined engine bay; the benchmark analog hypercar."},
+  {n:"A044",y:1991,mk:"Ferrari",md:"F40",tr:"",cat:"Supercar",house:"Broad Arrow",ev:"Amelia Island",loc:"Amelia Island, FL",cur:"USD",lo:2600000,hi:3000000,res:"reserve",fmt:"live",d:38,ch:"ZFFGJ34B000088xxx",eng:"2.9L twin-turbo V8",tx:"5-spd manual",mi:"12,100 mi",blurb:"Non-cat, non-adjust early build — the purist's F40 specification."},
+  {n:"P061",y:1971,mk:"Lamborghini",md:"Miura SV",tr:"",cat:"Classic",house:"RM Sotheby's",ev:"Paris (Rétromobile)",loc:"Paris, FR",cur:"EUR",lo:2400000,hi:2900000,res:"reserve",fmt:"live",d:52,ch:"5012",eng:"4.0L V12",tx:"5-spd manual",mi:"—",blurb:"Late split-sump SV, Bertone-bodied; the apex of the Miura line."},
+  {n:"A027",y:1955,mk:"Mercedes-Benz",md:"300SL Gullwing",tr:"",cat:"Classic",house:"Gooding Christie's",ev:"Amelia Island",loc:"Amelia Island, FL",cur:"USD",lo:1600000,hi:1900000,res:"reserve",fmt:"live",d:38,ch:"198.040",eng:"3.0L fuel-injected I6",tx:"4-spd manual",mi:"—",blurb:"Numbers-matching Gullwing with documented ownership and recent service."},
+  {n:"K233",y:1966,mk:"Ford",md:"GT40 Mk I",tr:"",cat:"Race",house:"Mecum",ev:"Kissimmee",loc:"Kissimmee, FL",cur:"USD",lo:6500000,hi:8000000,res:"reserve",fmt:"live",d:9,ch:"P/1042",eng:"4.7L V8",tx:"ZF 5-spd",mi:"—",blurb:"Period-correct GT40 with continuous history — the silhouette that beat Ferrari at Le Mans."},
+  {n:"SC311",y:1966,mk:"Shelby",md:"Cobra 427",tr:"S/C",cat:"Classic",house:"Barrett-Jackson",ev:"Scottsdale",loc:"Scottsdale, AZ",cur:"USD",lo:1400000,hi:1700000,res:"no-reserve",fmt:"live",d:16,ch:"CSX3xxx",eng:"7.0L V8",tx:"4-spd manual",mi:"—",blurb:"Semi-competition 427 Cobra crossing the block at no reserve."},
+  {n:"L052",y:1964,mk:"Aston Martin",md:"DB5",tr:"",cat:"Classic",house:"Bonhams Cars",ev:"London Auction",loc:"London, UK",cur:"GBP",lo:900000,hi:1100000,res:"reserve",fmt:"live",d:16,ch:"DB5/1xxx",eng:"4.0L I6",tx:"5-spd ZF",mi:"—",blurb:"Silver Birch DB5, matching numbers; the definitive grand tourer of its age."},
+  {n:"K198",y:1963,mk:"Jaguar",md:"E-Type Series 1",tr:"3.8 Roadster",cat:"Classic",house:"Mecum",ev:"Kissimmee",loc:"Kissimmee, FL",cur:"USD",lo:180000,hi:240000,res:"no-reserve",fmt:"live",d:9,ch:"8790xx",eng:"3.8L I6",tx:"4-spd manual",mi:"—",blurb:"Early flat-floor 3.8 roadster, restored to driver-grade; no reserve."},
+  {n:"P033",y:1926,mk:"Bugatti",md:"Type 35",tr:"Grand Prix",cat:"Race",house:"Bonhams Cars",ev:"Paris (Rétromobile)",loc:"Paris, FR",cur:"EUR",lo:2800000,hi:3600000,res:"reserve",fmt:"live",d:52,ch:"4xxx",eng:"2.0L straight-8",tx:"4-spd",mi:"—",blurb:"Genuine Grand Prix Type 35 with eligibility for the world's best historic events."},
+  {n:"S160",y:1975,mk:"Lancia",md:"Stratos HF",tr:"Stradale",cat:"Classic",house:"RM Sotheby's",ev:"Monterey",loc:"Monterey, CA",cur:"USD",lo:600000,hi:750000,res:"reserve",fmt:"live",d:24,ch:"829AR0xxx",eng:"2.4L Dino V6",tx:"5-spd manual",mi:"—",blurb:"Road-going Stratos — the wedge that won three straight WRC titles."},
+  {n:"S205",y:2006,mk:"Pagani",md:"Zonda F",tr:"",cat:"Supercar",house:"Broad Arrow",ev:"Monterey",loc:"Monterey, CA",cur:"USD",lo:2800000,hi:3400000,res:"reserve",fmt:"live",d:24,ch:"76xxx",eng:"7.3L AMG V12",tx:"6-spd manual",mi:"4,800 mi",blurb:"Manual Zonda F, the one collectors hunt; full Modena service history."},
+  {n:"S188",y:2003,mk:"Ferrari",md:"Enzo",tr:"",cat:"Supercar",house:"Gooding Christie's",ev:"Monterey",loc:"Monterey, CA",cur:"USD",lo:3200000,hi:3800000,res:"reserve",fmt:"live",d:24,ch:"134xxx",eng:"6.0L V12",tx:"6-spd F1",mi:"6,200 mi",blurb:"Rosso Corsa Enzo with Classiche book; flagship of the analog-to-digital era."},
+  {n:"SC288",y:2005,mk:"Porsche",md:"Carrera GT",tr:"",cat:"Supercar",house:"Barrett-Jackson",ev:"Scottsdale",loc:"Scottsdale, AZ",cur:"USD",lo:1800000,hi:2200000,res:"no-reserve",fmt:"live",d:16,ch:"WP0CA298xxS6xxxx",eng:"5.7L V10",tx:"6-spd manual",mi:"7,900 mi",blurb:"GT Silver CGT, no-reserve — the last great naturally-aspirated analog Porsche."},
+  {n:"K140",y:1970,mk:"Chevrolet",md:"Corvette ZR1",tr:"LT-1",cat:"Classic",house:"Mecum",ev:"Kissimmee",loc:"Kissimmee, FL",cur:"USD",lo:120000,hi:160000,res:"no-reserve",fmt:"live",d:9,ch:"194370xxx",eng:"5.7L LT-1 V8",tx:"4-spd manual",mi:"—",blurb:"Documented ZR1 option car; one of a few hundred built. No reserve."},
+  {n:"P088",y:1980,mk:"BMW",md:"M1",tr:"",cat:"Classic",house:"RM Sotheby's",ev:"Paris (Rétromobile)",loc:"Paris, FR",cur:"EUR",lo:600000,hi:720000,res:"reserve",fmt:"live",d:52,ch:"4301xxx",eng:"3.5L M88 I6",tx:"5-spd manual",mi:"—",blurb:"Giugiaro-bodied M1, the supercar that launched BMW M; striking in original spec."},
+  {n:"S176",y:1964,mk:"Alfa Romeo",md:"Giulia TZ",tr:"Tubolare",cat:"Race",house:"Gooding Christie's",ev:"Pebble Beach",loc:"Pebble Beach, CA",cur:"USD",lo:1300000,hi:1600000,res:"reserve",fmt:"live",d:24,ch:"AR750xxx",eng:"1.6L twin-cam I4",tx:"5-spd",mi:"—",blurb:"Zagato-bodied TZ1 with race provenance; featherweight giant-killer."},
+
+  // ---- online block lots (current bid + countdown) ----
+  {n:"#92841",y:2023,mk:"Porsche",md:"911 GT3 RS",tr:"992 / Weissach",cat:"Modern",house:"Cars & Bids",ev:"Online",loc:"Online — USA",cur:"USD",bid:245000,res:"no-reserve",fmt:"online",h:6,ch:"WP0AF2A9xPSxxxxxx",eng:"4.0L flat-6",tx:"7-spd PDK",mi:"1,200 mi",blurb:"Weissach + magnesium wheels, delivery-mile 992 GT3 RS at no reserve."},
+  {n:"CC-44217",y:2020,mk:"Ferrari",md:"488 Pista",tr:"",cat:"Supercar",house:"Collecting Cars",ev:"Online",loc:"Online — UK",cur:"GBP",bid:310000,res:"reserve",fmt:"online",h:30,ch:"ZFF90HLAxxxxxxxx",eng:"3.9L twin-turbo V8",tx:"7-spd DCT",mi:"6,500 mi",blurb:"Track-pack Pista in Giallo Modena; UK-supplied with full history."},
+  {n:"#88102",y:1992,mk:"Porsche",md:"964 Carrera RS",tr:"Lightweight",cat:"Classic",house:"Bring a Trailer",ev:"Online",loc:"Online — USA",cur:"USD",bid:285000,res:"no-reserve",fmt:"online",h:4,ch:"WP0ZZZ96ZNSxxxxxx",eng:"3.6L flat-6",tx:"5-spd manual",mi:"38,000 mi",blurb:"Euro-spec lightweight RS, seam-welded shell; the enthusiast's 964. No reserve."},
+  {n:"CC-44190",y:1990,mk:"BMW",md:"M3 Sport Evolution",tr:"E30 / Evo III",cat:"Classic",house:"Collecting Cars",ev:"Online",loc:"Online — DE",cur:"EUR",bid:165000,res:"no-reserve",fmt:"online",h:52,ch:"WBSAKxxxxLxxxxxxx",eng:"2.5L S14 I4",tx:"5-spd manual",mi:"74,000 km",blurb:"600-off Sport Evolution in Brilliant Red; the homologation E30 M3 to own."},
+  {n:"PCAR-7741",y:2020,mk:"McLaren",md:"600LT Spider",tr:"",cat:"Supercar",house:"PCARMARKET",ev:"Online",loc:"Online — USA",cur:"USD",bid:215000,res:"reserve",fmt:"online",h:70,ch:"SBM13SAAxLWxxxxxx",eng:"3.8L twin-turbo V8",tx:"7-spd DCT",mi:"3,900 mi",blurb:"MSO Defined 600LT Spider with top-exit exhausts and carbon everything."},
+  {n:"#88054",y:1973,mk:"Porsche",md:"911 Carrera RS 2.7",tr:"Touring",cat:"Classic",house:"Bring a Trailer",ev:"Online",loc:"Online — USA",cur:"USD",bid:520000,res:"reserve",fmt:"online",h:20,ch:"9113600xxx",eng:"2.7L flat-6",tx:"5-spd manual",mi:"—",blurb:"Numbers-matching 2.7 RS Touring in Grand Prix White with COA."},
+  {n:"#92760",y:2000,mk:"Nissan",md:"Skyline GT-R R34",tr:"V-Spec II",cat:"Modern",house:"Cars & Bids",ev:"Online",loc:"Online — USA",cur:"USD",bid:295000,res:"no-reserve",fmt:"online",h:11,ch:"BNR34-xxxxxx",eng:"2.6L RB26DETT I6",tx:"6-spd manual",mi:"41,000 km",blurb:"Bayside Blue V-Spec II, legally imported; the R34 the market chases. No reserve."},
+  {n:"CC-44156",y:1995,mk:"Audi",md:"RS2 Avant",tr:"Porsche-built",cat:"Modern",house:"Collecting Cars",ev:"Online",loc:"Online — DE",cur:"EUR",bid:78000,res:"no-reserve",fmt:"online",h:44,ch:"WAUZZZ8CxSAxxxxxx",eng:"2.2L turbo I5",tx:"6-spd manual",mi:"118,000 km",blurb:"Nogaro Blue RS2 — the Porsche-built wagon that started the fast-estate cult."},
+  {n:"#92688",y:1999,mk:"Lotus",md:"Esprit V8",tr:"",cat:"Modern",house:"Cars & Bids",ev:"Online",loc:"Online — USA",cur:"USD",bid:42000,res:"no-reserve",fmt:"online",h:8,ch:"SCCDCxxxxXHAxxxxx",eng:"3.5L twin-turbo V8",tx:"5-spd manual",mi:"29,000 mi",blurb:"Late twin-turbo V8 Esprit, the analog wedge's swan song. No reserve."},
+  {n:"PCAR-7702",y:1995,mk:"Porsche",md:"928 GTS",tr:"",cat:"Modern",house:"PCARMARKET",ev:"Online",loc:"Online — USA",cur:"USD",bid:64000,res:"reserve",fmt:"online",h:96,ch:"WP0AA2922SSxxxxxx",eng:"5.4L V8",tx:"6-spd manual",mi:"52,000 mi",blurb:"Final-year manual 928 GTS, the rarest and most wanted of the front-engine V8s."},
+  {n:"#88011",y:1999,mk:"Ferrari",md:"360 Modena",tr:"6-speed",cat:"Modern",house:"Bring a Trailer",ev:"Online",loc:"Online — USA",cur:"USD",bid:92000,res:"no-reserve",fmt:"online",h:2,ch:"ZFFYR51AxX011xxxx",eng:"3.6L V8",tx:"6-spd gated manual",mi:"34,000 mi",blurb:"Gated-manual 360 Modena in Rosso — the spec values keep climbing. No reserve."},
+  {n:"CC-44098",y:1990,mk:"Mercedes-Benz",md:"190E 2.5-16",tr:"Evolution II",cat:"Classic",house:"Collecting Cars",ev:"Online",loc:"Online — DE",cur:"EUR",bid:240000,res:"reserve",fmt:"online",h:120,ch:"WDB201036xxxxxxx",eng:"2.5L Cosworth I4",tx:"5-spd manual",mi:"89,000 km",blurb:"Blue-Black Evo II, 502-off DTM homologation special with the iconic aero kit."},
+  {n:"#92611",y:1994,mk:"Toyota",md:"Supra Turbo",tr:"Mk4 / 6-speed",cat:"Modern",house:"Cars & Bids",ev:"Online",loc:"Online — USA",cur:"USD",bid:110000,res:"no-reserve",fmt:"online",h:14,ch:"JT2DE82AxR00xxxxx",eng:"3.0L 2JZ-GTE I6",tx:"6-spd manual",mi:"58,000 mi",blurb:"Stock 6-speed twin-turbo Mk4 Supra; unmodified survivors are the grail. No reserve."},
+  {n:"SM-3120",y:1972,mk:"Alpine",md:"A110 1600S",tr:"",cat:"Race",house:"Sotheby's Motorsport",ev:"Online",loc:"Online — FR",cur:"EUR",bid:98000,res:"reserve",fmt:"online",h:150,ch:"18xxx",eng:"1.6L I4",tx:"5-spd manual",mi:"—",blurb:"Rally-bred A110 1600S; the giant-killer that won the first WRC manufacturers' title."}
+];
+
+/* ---- build runtime records ---- */
+const NOW = Date.now();
+const HOUR = 36e5, DAY = 864e5;
+function jitter(ms){ return ms + Math.floor((Math.random()-.5) * Math.min(ms*0.06, 90*60*1000)); }
+
+let LOTS = [];
+let SOURCES = [];
+function buildDemoLots(){ return RAW.map((r,i)=>{
+  const closes = r.fmt==="online" ? NOW + jitter(r.h*HOUR) : NOW + r.d*DAY;
+  return {
+    id:i+1, lot:r.n, year:r.y, make:r.mk, model:r.md, trim:r.tr||"",
+    cat:r.cat, house:r.house, event:r.ev, location:r.loc, currency:r.cur,
+    estLow:r.lo||null, estHigh:r.hi||null, bid:r.bid||null,
+    reserve:r.res, format:r.fmt, closes,
+    chassis:r.ch, engine:r.eng, trans:r.tx, miles:r.mi, blurb:r.blurb,
+    hue:HUE[r.mk] ?? 210,
+    sourceUrl:HOUSES[r.house] || "#"
+  };
+});
+}
+
+/* ============================================================
+   helpers
+   ============================================================ */
+const $ = s => document.querySelector(s);
+const FX = {USD:1, GBP:1.34, EUR:1.08};
+const SYM = {USD:"$", GBP:"£", EUR:"€"};
+
+function money(v, cur){
+  if(v==null) return "—";
+  return SYM[cur] + Math.round(v).toLocaleString("en-US");
+}
+function usd(v, cur){
+  if(v==null || cur==="USD") return null;
+  return "≈ $" + Math.round(v*FX[cur]).toLocaleString("en-US");
+}
+function lotValue(l){ // normalized USD for sorting/curated tiers
+  const base = l.bid ?? ((l.estLow+l.estHigh)/2);
+  return base * (FX[l.currency]||1);
+}
+function priceLabel(l){
+  if(l.format==="online") return {k:"Current bid", v:money(l.bid,l.currency), usd:usd(l.bid,l.currency)};
+  return {k:"Estimate", v:`${money(l.estLow,l.currency)} – ${money(l.estHigh,l.currency)}`, usd:usd(l.estHigh,l.currency)};
+}
+function cd(ms){
+  if(ms<=0) return "closed";
+  const s=Math.floor(ms/1000), d=Math.floor(s/86400), h=Math.floor(s%86400/3600),
+        m=Math.floor(s%3600/60), ss=s%60, p=n=>String(n).padStart(2,"0");
+  if(d>0) return `${d}d ${p(h)}:${p(m)}:${p(ss)}`;
+  return `${p(h)}:${p(m)}:${p(ss)}`;
+}
+function fmtDate(ms){
+  return new Date(ms).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+}
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ============================================================
+   state + filters
+   ============================================================ */
+const state = {q:"",make:"",house:"",cat:"",fmt:"",ymin:"",ymax:"",nr:false,sort:"soon"};
+const watch = new Set();
+
+function matches(l){
+  if(state.make && l.make!==state.make) return false;
+  if(state.house && l.house!==state.house) return false;
+  if(state.cat && l.cat!==state.cat) return false;
+  if(state.fmt && l.format!==state.fmt) return false;
+  if(state.nr && l.reserve!=="no-reserve") return false;
+  if(state.ymin && l.year < +state.ymin) return false;
+  if(state.ymax && l.year > +state.ymax) return false;
+  if(state.q){
+    const hay = `${l.year} ${l.make} ${l.model} ${l.trim} ${l.house} ${l.cat} ${l.chassis} ${l.location}`.toLowerCase();
+    if(!hay.includes(state.q.toLowerCase())) return false;
+  }
+  return true;
+}
+function sortLots(arr){
+  const s=state.sort;
+  return arr.sort((a,b)=>{
+    if(s==="soon") return a.closes-b.closes;
+    if(s==="high") return lotValue(b)-lotValue(a);
+    if(s==="low")  return lotValue(a)-lotValue(b);
+    if(s==="year-new") return b.year-a.year;
+    if(s==="year-old") return a.year-b.year;
+    return 0;
+  });
+}
+
+/* ============================================================
+   render
+   ============================================================ */
+function cardHTML(l){
+  const p = priceLabel(l);
+  const within = l.closes - Date.now();
+  const soon = l.format==="online" && within>0 && within < 12*HOUR;
+  const starred = watch.has(l.id);
+  const fmtTag = l.format==="online" ? "Online" : "Live";
+
+  const badges = [];
+  if(soon) badges.push(`<span class="badge soon"><span class="d"></span>Ending soon</span>`);
+  if(l.reserve==="no-reserve") badges.push(`<span class="badge nr">No reserve</span>`);
+  badges.push(`<span class="badge fmt">${fmtTag}</span>`);
+
+  const foot = l.format==="online"
+    ? `<div class="cd ${within<6*HOUR?'urgent':''}" data-cd="${l.id}"><div class="k">Ends in</div>${cd(within)}</div>`
+    : `<div class="cd" style="color:var(--ink-2)"><div class="k">Auction</div>${fmtDate(l.closes)}</div>`;
+
+  return `
+  <article class="lot fade" tabindex="0" role="button" data-id="${l.id}" aria-label="${esc(l.year+' '+l.make+' '+l.model)}">
+    <div class="thumb" style="--hue:${l.hue}">
+      ${l.img ? `<img class="thumb-img" loading="lazy" alt="${esc(l.year+' '+l.make+' '+l.model)}" src="${esc(l.img)}" onerror="this.remove()">` : ""}
+      <div class="plate">LOT ${esc(l.lot)}</div>
+      <div class="badges">${badges.join("")}</div>
+      <div class="marque">${esc(l.make)}</div>
+      <button class="star-toggle ${starred?'on':''}" data-star="${l.id}" aria-label="Watch this car" title="Add to watchlist">★</button>
+    </div>
+    <div class="lot-body">
+      <div class="lot-title"><span class="yr">${l.year}</span> ${esc(l.make)} ${esc(l.model)}${l.trim?` <span style="color:var(--muted)">· ${esc(l.trim)}</span>`:""}</div>
+      <div class="lot-meta">
+        <span class="house">${esc(l.house)}</span><span class="dotsep"></span>
+        <span>${esc(l.event)}</span><span class="dotsep"></span>
+        <span>${esc(l.location)}</span>
+      </div>
+      <div class="lot-foot">
+        <div class="price">
+          <div class="k">${p.k}</div>
+          <div class="v">${p.v}</div>
+          ${p.usd?`<div class="usd">${p.usd}</div>`:""}
+        </div>
+        ${foot}
+      </div>
+    </div>
+  </article>`;
+}
+
+function render(){
+  const filtered = sortLots(LOTS.filter(matches));
+  const grid = $("#grid"), empty = $("#empty");
+  if(filtered.length===0){
+    grid.innerHTML=""; grid.style.display="none"; empty.style.display="block";
+  }else{
+    empty.style.display="none"; grid.style.display="grid";
+    grid.innerHTML = filtered.map(cardHTML).join("");
+  }
+  $("#resCount").textContent = `${filtered.length} of ${LOTS.length} lots`;
+  bindCards();
+  updateGauges();
+}
+
+function updateGauges(){
+  const now = Date.now();
+  $("#g-lots").textContent  = LOTS.length;
+  $("#g-houses").textContent = new Set(LOTS.map(l=>l.house)).size;
+  $("#g-nr").textContent    = LOTS.filter(l=>l.reserve==="no-reserve").length;
+  $("#g-today").textContent = LOTS.filter(l=> l.closes-now>0 && l.closes-now < DAY).length;
+  $("#g-week").textContent  = LOTS.filter(l=> l.closes-now>0 && l.closes-now < 7*DAY).length;
+}
+
+function bindCards(){
+  document.querySelectorAll(".lot").forEach(el=>{
+    el.addEventListener("click", e=>{
+      if(e.target.closest("[data-star]")) return;
+      openDetail(+el.dataset.id);
+    });
+    el.addEventListener("keydown", e=>{
+      if(e.key==="Enter"||e.key===" "){ e.preventDefault(); openDetail(+el.dataset.id); }
+    });
+  });
+  document.querySelectorAll("[data-star]").forEach(b=>{
+    b.addEventListener("click", e=>{ e.stopPropagation(); toggleWatch(+b.dataset.star, b); });
+  });
+}
+
+/* ============================================================
+   watchlist
+   ============================================================ */
+function toggleWatch(id, btn){
+  if(watch.has(id)) watch.delete(id); else watch.add(id);
+  $("#watchN").textContent = watch.size;
+  if(btn) btn.classList.toggle("on", watch.has(id));
+  const mb = $("#detailWatch");
+  if(mb && +mb.dataset.id===id){
+    mb.classList.toggle("on", watch.has(id));
+    mb.querySelector("span").textContent = watch.has(id) ? "Watching" : "Watch this car";
+  }
+  document.querySelectorAll(`[data-star="${id}"]`).forEach(s=>s.classList.toggle("on", watch.has(id)));
+  persistWatch(id, watch.has(id));
+}
+
+/* ============================================================
+   detail sheet — comps + trend (demo-derived, deterministic)
+   ============================================================ */
+function seededComps(l){
+  const base = l.bid ?? ((l.estLow+l.estHigh)/2);
+  const offs = [-0.07, 0.05, 0.12];
+  const months = ["3 mo ago","7 mo ago","14 mo ago"];
+  const venues = ["Private sale","Online block","Live event"];
+  return offs.map((o,i)=>{
+    const sp = Math.round(base*(1+o)/1000)*1000;
+    return {
+      desc:`${l.year+(i-1)} ${l.make} ${l.model}`,
+      where:venues[i], when:months[i],
+      sold: money(sp, l.currency),
+      sold_price: sp, currency: l.currency, usd_price: Math.round(sp*(FX[l.currency]||1))
+    };
+  });
+}
+function openDetail(id){
+  const l = LOTS.find(x=>x.id===id); if(!l) return;
+  teardownChat();
+  const p = priceLabel(l);
+  const within = l.closes - Date.now();
+  const comps = seededComps(l);
+  const starred = watch.has(l.id);
+
+  const specs = [
+    ["Chassis", l.chassis],["Engine", l.engine],["Transmission", l.trans],
+    ["Odometer", l.miles && l.miles!=="—" ? l.miles : "Not disclosed"],
+    ["Category", l.cat],["Reserve", l.reserve==="no-reserve" ? "No reserve" : "Reserve"]
+  ];
+
+  const timeBlock = l.format==="online"
+    ? `<div class="price-card amber"><div class="k">Ends in</div><div class="v" data-cd-detail="${l.id}">${cd(within)}</div><div class="sub">${esc(l.house)} online block</div></div>`
+    : `<div class="price-card"><div class="k">Auction date</div><div class="v" style="font-size:17px">${fmtDate(l.closes)}</div><div class="sub">${esc(l.event)} · ${esc(l.location)}</div></div>`;
+
+  const similar = LOTS.filter(x=>x.make===l.make && x.id!==l.id).slice(0,3);
+
+  $("#sheetContent").innerHTML = `
+    <div class="sheet-hero" style="--hue:${l.hue}">${l.img ? `<img class="sheet-img" alt="${esc(l.year+' '+l.make+' '+l.model)}" src="${esc(l.img)}" onerror="this.remove()">` : ""}<div class="marque">${esc(l.make)}</div></div>
+    <div class="sheet-pad">
+      <div class="plate" style="position:static;display:inline-block;margin-bottom:12px">LOT ${esc(l.lot)} · ${l.format==="online"?"ONLINE":"LIVE"}</div>
+      <h3><span class="yr">${l.year}</span> ${esc(l.make)} ${esc(l.model)}</h3>
+      <div class="line">
+        ${l.trim?`<b>${esc(l.trim)}</b><span class="dotsep"></span>`:""}
+        <b>${esc(l.house)}</b><span class="dotsep"></span>${esc(l.event)}<span class="dotsep"></span>${esc(l.location)}
+      </div>
+      <p style="color:var(--ink-2);margin:0 0 4px;max-width:62ch">${esc(l.blurb)}</p>
+
+      <div class="price-row" style="margin-top:20px">
+        <div class="price-card amber" id="detailPrice"><div class="k">${p.k}</div><div class="v">${p.v}</div>${p.usd?`<div class="sub">${p.usd}</div>`:""}</div>
+        ${timeBlock}
+      </div>
+
+      <div class="sec-h">Live discussion <span id="chatPresence" class="chat-presence"></span></div>
+      <div class="chat" id="chatMount"></div>
+
+      <div class="sec-h">Specification</div>
+      <div class="specs">${specs.map(s=>`<div class="spec"><div class="k">${s[0]}</div><div class="v">${esc(s[1]||"—")}</div></div>`).join("")}</div>
+
+      <div class="sec-h">Comparable sales</div>
+      <div class="comps" id="compsBox">${comps.map(c=>`<div class="comp"><div class="desc">${esc(c.desc)}<small>${c.where} · ${c.when}</small></div><div class="sold">${c.sold}</div></div>`).join("")}</div>
+
+      <div class="sec-h">Market read</div>
+      <div id="marketRead" class="market-read"></div>
+
+      ${similar.length?`<div class="sec-h">Similar cars coming up</div>
+      <div class="similar">${similar.map(s=>`
+        <button class="sim" data-sim="${s.id}" style="--hue:${s.hue}">
+          <span class="sw"></span>
+          <span><span class="t">${s.year} ${esc(s.make)} ${esc(s.model)}</span><span class="m">${esc(s.house)} · ${esc(s.event)}</span></span>
+          <span class="go">→</span>
+        </button>`).join("")}</div>`:""}
+
+      <div class="sheet-actions">
+        <a class="btn primary" href="${l.sourceUrl}" target="_blank" rel="noopener">View on ${esc(l.house)} ↗</a>
+        <button class="btn ghost ${starred?'on':''}" id="detailWatch" data-id="${l.id}">★ <span>${starred?"Watching":"Watch this car"}</span></button>
+      </div>
+      <p style="font-size:11px;color:var(--muted-2);margin-top:16px;letter-spacing:.03em">Demo record — comps and trend are illustrative. Source link opens the auction house, not a stored copy.</p>
+    </div>`;
+
+  $("#detailWatch").addEventListener("click", ()=>toggleWatch(l.id, null));
+  $("#sheetContent").querySelectorAll("[data-sim]").forEach(b=>{
+    b.addEventListener("click", ()=>openDetail(+b.dataset.sim));
+  });
+  renderMarketRead(l, comps);
+  hydrateComps(l);
+  initChat(l.id);
+  subscribeLot(l.id);
+  $("#sheet").scrollTop = 0;
+  $("#scrim").classList.add("open");
+  document.body.style.overflow="hidden";
+  $("#sheetX").focus();
+}
+function closeDetail(){
+  teardownChat();
+  $("#scrim").classList.remove("open");
+  document.body.style.overflow="";
+}
+
+/* ============================================================
+   curated quick chips
+   ============================================================ */
+function resetState(){
+  Object.assign(state,{q:"",make:"",house:"",cat:"",fmt:"",ymin:"",ymax:"",nr:false});
+  $("#q").value=""; $("#make").value=""; $("#house").value=""; $("#cat").value="";
+  $("#fmt").value=""; $("#ymin").value=""; $("#ymax").value="";
+  $("#nrToggle").classList.remove("on"); $("#nrToggle").setAttribute("aria-pressed","false");
+}
+function applyChip(key, btn){
+  const wasOn = btn.classList.contains("on");
+  document.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+  resetState();
+  if(wasOn){ syncSelectsFromState(); render(); return; }
+
+  btn.classList.add("on");
+  switch(key){
+    case "nr-soon": state.nr=true; state.fmt="online"; state.sort="soon"; break;
+    case "ferrari": state.make="Ferrari"; break;
+    case "porsche": state.make="Porsche"; break;
+    case "race":    state.cat="Race"; break;
+    case "monterey":state.q="monterey"; break; // matches event/location text
+    case "online-today": state.fmt="online"; state.sort="soon"; break;
+  }
+  syncSelectsFromState();
+  render();
+}
+function syncSelectsFromState(){
+  $("#q").value=state.q; $("#make").value=state.make; $("#house").value=state.house;
+  $("#cat").value=state.cat; $("#fmt").value=state.fmt; $("#sort").value=state.sort;
+  $("#nrToggle").classList.toggle("on", state.nr);
+  $("#nrToggle").setAttribute("aria-pressed", state.nr?"true":"false");
+}
+
+/* ============================================================
+   init
+   ============================================================ */
+function populateSelects(){
+  const makes=[...new Set(LOTS.map(l=>l.make))].filter(Boolean).sort();
+  const srcList = SOURCES.length ? SOURCES : Object.entries(HOUSES).map(([name,base_url])=>({name,base_url}));
+  const houses = srcList.map(s=>s.name).sort();
+  $("#make").insertAdjacentHTML("beforeend", makes.map(m=>`<option>${esc(m)}</option>`).join(""));
+  $("#house").insertAdjacentHTML("beforeend", houses.map(h=>`<option>${esc(h)}</option>`).join(""));
+  $("#sources").innerHTML = srcList.map(s=>`<a href="${s.base_url||'#'}" target="_blank" rel="noopener">${esc(s.name)} ↗</a>`).join("");
+}
+
+function bindControls(){
+  const clearChips = ()=>document.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+  $("#q").addEventListener("input", e=>{ state.q=e.target.value; clearChips(); render(); });
+  $("#make").addEventListener("change", e=>{ state.make=e.target.value; clearChips(); render(); });
+  $("#house").addEventListener("change", e=>{ state.house=e.target.value; clearChips(); render(); });
+  $("#cat").addEventListener("change", e=>{ state.cat=e.target.value; clearChips(); render(); });
+  $("#fmt").addEventListener("change", e=>{ state.fmt=e.target.value; clearChips(); render(); });
+  $("#ymin").addEventListener("input", e=>{ state.ymin=e.target.value; clearChips(); render(); });
+  $("#ymax").addEventListener("input", e=>{ state.ymax=e.target.value; clearChips(); render(); });
+  $("#sort").addEventListener("change", e=>{ state.sort=e.target.value; render(); });
+  $("#nrToggle").addEventListener("click", ()=>{
+    state.nr=!state.nr; clearChips();
+    $("#nrToggle").classList.toggle("on", state.nr);
+    $("#nrToggle").setAttribute("aria-pressed", state.nr?"true":"false");
+    render();
+  });
+  $("#reset").addEventListener("click", ()=>{ clearChips(); resetState(); state.sort="soon"; $("#sort").value="soon"; render(); });
+  $("#emptyReset").addEventListener("click", ()=>{ clearChips(); resetState(); render(); });
+  document.querySelectorAll(".chip").forEach(b=>b.addEventListener("click", ()=>applyChip(b.dataset.q, b)));
+
+  $("#sheetX").addEventListener("click", closeDetail);
+  $("#scrim").addEventListener("click", e=>{ if(e.target.id==="scrim") closeDetail(); });
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeDetail(); });
+  $("#watchBar").addEventListener("click", ()=>{
+    if(watch.size===0){ alert("Your watchlist is empty. Tap ★ on any car to track it. (Session-only in this demo — Supabase persists it in production.)"); return; }
+    clearChips(); resetState();
+    state.q=""; render();
+    // filter view to watched
+    const grid=$("#grid");
+    const watched = sortLots(LOTS.filter(l=>watch.has(l.id)));
+    grid.style.display="grid"; $("#empty").style.display="none";
+    grid.innerHTML = watched.map(cardHTML).join(""); bindCards();
+    $("#resCount").textContent = `${watched.length} watched`;
+    grid.scrollIntoView({behavior:"smooth", block:"start"});
+  });
+}
+
+function tick(){
+  const now = Date.now();
+  document.querySelectorAll("[data-cd]").forEach(el=>{
+    const l = LOTS.find(x=>x.id===+el.dataset.cd); if(!l) return;
+    const within = l.closes-now;
+    el.childNodes[el.childNodes.length-1].textContent = cd(within);
+    el.classList.toggle("urgent", within>0 && within<6*HOUR);
+  });
+  const dt = document.querySelector("[data-cd-detail]");
+  if(dt){ const l=LOTS.find(x=>x.id===+dt.dataset.cdDetail); if(l) dt.textContent=cd(l.closes-now); }
+  updateGauges();
+}
+function clock(){
+  $("#clock").textContent = new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
+}
+
+/* ============================================================
+   DATA LAYER — Supabase REST (PostgREST) with demo fallback
+   Fill in the two constants below, then the cards render from
+   your `auction_lots` table. Leave them blank to run on the
+   bundled demo data. CORS is enabled on Supabase by default.
+   ============================================================ */
+const SUPABASE_URL      = "https://ynukbvtluymsxllewlsa.supabase.co";   // e.g. https://YOURPROJECT.supabase.co
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InludWtidnRsdXltc3hsbGV3bHNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1OTU5ODksImV4cCI6MjA5ODE3MTk4OX0.RfjtuT2PCKsH2QHnGyLoIZyvXD-n3DYlZ_MQU6AJ4Hw";   // anon / publishable key — safe to ship in client code.
+                                // NEVER place the service_role key here; the scraper pipeline uses that server-side.
+const HAS_SB = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+async function sbFetch(path){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
+  });
+  if(!res.ok) throw new Error(`Supabase ${res.status}`);
+  return res.json();
+}
+
+/* map a v_radar_lots row -> the in-app lot shape the renderer expects */
+function mapRow(r){
+  const closes = new Date(r.closes_at || r.auction_end_date || r.auction_start_date).getTime();
+  return {
+    id:r.id, lot:r.lot_number || `#${r.id}`, year:r.year, make:r.make, model:r.model, trim:r.trim||"",
+    cat:r.category||"Classic", house:r.source_name, event:r.auction_event_name||"", location:r.location||"",
+    currency:r.currency||"USD",
+    estLow: r.estimate_low  != null ? Number(r.estimate_low)  : null,
+    estHigh:r.estimate_high != null ? Number(r.estimate_high) : null,
+    bid:    r.current_bid   != null ? Number(r.current_bid)   : null,
+    reserve:r.reserve_status||"reserve",
+    format: r.auction_type||"live",
+    closes: Number.isFinite(closes) ? closes : Date.now()+7*DAY,
+    chassis:r.chassis||"\u2014", engine:r.engine||"\u2014", trans:r.transmission||"\u2014",
+    miles:r.mileage||"\u2014", blurb:r.description_short||"",
+    hue:HUE[r.make] ?? 210,
+    img: r.image_url || null,
+    sourceUrl:r.source_url || r.source_base_url || HOUSES[r.source_name] || "#"
+  };
+}
+
+async function loadSources(){
+  if(HAS_SB){
+    try{
+      const rows = await sbFetch("auction_sources?select=name,base_url&active=eq.true&order=name.asc");
+      if(rows && rows.length) return rows;
+    }catch(e){ console.warn("Source fetch failed \u2014 using bundled list.", e); }
+  }
+  return Object.entries(HOUSES).map(([name,base_url])=>({name, base_url}));
+}
+
+async function loadLots(){
+  if(HAS_SB){
+    try{
+      const rows = await sbFetch("v_radar_lots?select=*&order=closes_at.asc&limit=1000");
+      if(rows && rows.length) return {lots:rows.map(mapRow), mode:"live"};
+    }catch(e){ console.warn("Lot fetch failed \u2014 falling back to demo data.", e); }
+  }
+  return {lots:buildDemoLots(), mode:"demo"};
+}
+
+/* on detail open, swap generated comps for real price_comps rows if present */
+async function sbRpc(fn, body){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method:"POST",
+    headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}`, "Content-Type":"application/json" },
+    body: JSON.stringify(body||{})
+  });
+  if(!res.ok) throw new Error(`rpc ${fn} ${res.status}`);
+  return res.json();
+}
+
+function compUSD(c){
+  if(c.usd_price!=null) return Number(c.usd_price);
+  return Math.round(Number(c.sold_price||0) * (FX[c.currency]||1));
+}
+
+function renderMarketRead(l, comps){
+  const box = document.getElementById("marketRead");
+  if(!box) return;
+  const prices = (comps||[]).map(compUSD).filter(n=>n>0).sort((a,b)=>a-b);
+  if(!prices.length){
+    box.innerHTML = '<p class="mr-note">Not enough comparable sales yet for this model. The pipeline records sold prices as similar lots close.</p>';
+    return;
+  }
+  const median = prices[Math.floor((prices.length-1)/2)];
+  const lo = prices[0], hi = prices[prices.length-1];
+  const usd = n => "$" + Math.round(n).toLocaleString("en-US");
+  let pos = "";
+  const cur = lotValue(l);
+  if(cur > 0){
+    const d = Math.round((cur - median)/median*100);
+    const word = d < -2 ? "below" : (d > 2 ? "above" : "in line with");
+    const cls = d < -2 ? "under" : (d > 2 ? "over" : "even");
+    const ref = (l.bid!=null) ? "Current bid" : "Estimate";
+    pos = `<div class="mr-pos ${cls}">${ref} sits ${d===0?"":Math.abs(d)+"% "}${word} the median sale.</div>`;
+  }
+  box.innerHTML =
+    '<div class="mr-grid">'
+    + '<div class="mr-cell"><span class="mr-k">Median sold</span><span class="mr-v">'+usd(median)+'</span></div>'
+    + '<div class="mr-cell"><span class="mr-k">Range</span><span class="mr-v">'+usd(lo)+' – '+usd(hi)+'</span></div>'
+    + '<div class="mr-cell"><span class="mr-k">Comps</span><span class="mr-v">'+prices.length+'</span></div>'
+    + '</div>' + pos;
+}
+
+async function hydrateComps(l){
+  if(!HAS_SB) return;
+  try{
+    const rows = await sbRpc("lot_comps", { p_lot_id: l.id, p_limit: 6 });
+    if(rows && rows.length){
+      const box = document.getElementById("compsBox");
+      if(box){
+        box.innerHTML = rows.map(c=>`<div class="comp"><div class="desc">${esc(c.description||(l.make+' '+l.model))}<small>${esc(c.comparable_source||'Auction')} · ${c.sold_date?new Date(c.sold_date).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—"}</small></div><div class="sold">${money(Number(c.sold_price), c.currency||l.currency)}</div></div>`).join("");
+      }
+      renderMarketRead(l, rows);
+    }
+  }catch(e){ /* keep generated comps + seeded read */ }
+}
+
+function setLoading(){
+  const grid=$("#grid"); grid.style.display="grid"; $("#empty").style.display="none";
+  grid.innerHTML = `<div class="empty" style="grid-column:1/-1;background:transparent;border-style:dashed"><h3 style="color:var(--muted)">Scanning the blocks\u2026</h3><p>Pulling upcoming lots.</p></div>`;
+  $("#resCount").textContent = "loading\u2026";
+}
+
+function setDataMode(mode, count){
+  const note = document.getElementById("modeNote");
+  const seed = document.getElementById("seed");
+  if(mode==="live"){
+    if(note) note.innerHTML = `<b>Live data.</b> Showing ${count} upcoming lot${count===1?"":"s"} from your Supabase table, kept current by the source pipeline. The radar links back to each auction house and never rehosts catalogs \u2014 it surfaces facts (year / make / model, house, date, location, public estimate or bid, reserve, a single placeholder, short summary) and drives the click to the original listing.`;
+    if(seed) seed.textContent = `Supabase \u00b7 ${count} lots`;
+  }else if(seed){
+    seed.textContent = HAS_SB ? "Supabase unreachable \u00b7 demo" : "Bundled demo";
+  }
+}
+
+async function boot(){
+  setLoading();
+  const [sources, data] = await Promise.all([loadSources(), loadLots()]);
+  SOURCES = sources;
+  LOTS = data.lots;
+  DATA_MODE = data.mode;
+  populateSelects();
+  bindControls();
+  render();
+  setDataMode(data.mode, LOTS.length);
+  updateAlertsUI();
+  clock();
+  setInterval(tick, 1000);
+  setInterval(clock, 30000);
+}
+/* ============================================================
+   ACCOUNTS — Supabase Auth (email magic link) + saved watchlist
+   Uses supabase-js (loaded in <head>). Watchlist reads/writes go
+   through the authenticated client; RLS scopes watched_lots to the
+   signed-in user. Falls back to the session-only watchlist when
+   there's no backend (blank keys / preview) or no signed-in user.
+   ============================================================ */
+let sb = null, session = null, DATA_MODE = "demo";
+
+function getSbClient(){
+  try{
+    if(HAS_SB && window.supabase && window.supabase.createClient){
+      return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+      });
+    }
+  }catch(e){ console.warn("supabase-js init failed:", e); }
+  return null;
+}
+
+function refreshWatchUI(){
+  $("#watchN").textContent = watch.size;
+  document.querySelectorAll("[data-star]").forEach(s=>s.classList.toggle("on", watch.has(+s.dataset.star)));
+  const mb = $("#detailWatch");
+  if(mb){
+    const id = +mb.dataset.id;
+    mb.classList.toggle("on", watch.has(id));
+    const sp = mb.querySelector("span");
+    if(sp) sp.textContent = watch.has(id) ? "Watching" : "Watch this car";
+  }
+}
+
+async function persistWatch(id, on){
+  if(!sb || !session || DATA_MODE !== "live") return;   // session-only otherwise
+  try{
+    if(on) await sb.from("watched_lots").insert({ lot_id: id });
+    else   await sb.from("watched_lots").delete().eq("lot_id", id);
+  }catch(e){ console.warn("watchlist sync failed:", e); }
+}
+
+async function loadWatchlist(){
+  if(!sb || !session || DATA_MODE !== "live") return;
+  try{
+    const pending = [...watch].map(lot_id => ({ lot_id }));
+    if(pending.length) await sb.from("watched_lots").upsert(pending, { onConflict:"user_id,lot_id", ignoreDuplicates:true });
+    const { data, error } = await sb.from("watched_lots").select("lot_id");
+    if(error) throw error;
+    watch.clear();
+    (data||[]).forEach(r => watch.add(r.lot_id));
+    refreshWatchUI();
+  }catch(e){ console.warn("load watchlist failed:", e); }
+}
+
+function renderAuthUI(){
+  const b = $("#authBtn"); if(!b) return;
+  if(session && session.user){
+    const email = session.user.email || "Account";
+    b.textContent = email.length > 24 ? email.slice(0,22)+"…" : email;
+    b.classList.add("signed"); b.title = "Sign out";
+  }else{
+    b.textContent = "Sign in"; b.classList.remove("signed"); b.title = "Sign in to save your watchlist";
+  }
+  updateAlertsUI();
+}
+
+function openAuth(){ $("#authMsg").textContent=""; $("#authScrim").classList.add("open"); document.body.style.overflow="hidden"; setTimeout(()=>$("#authEmail").focus(), 60); }
+function closeAuth(){ $("#authScrim").classList.remove("open"); document.body.style.overflow=""; }
+
+async function sendMagicLink(){
+  const email = ($("#authEmail").value||"").trim();
+  const msg = $("#authMsg"), btn = $("#authSend");
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ msg.style.color="var(--claret)"; msg.textContent="Enter a valid email address."; return; }
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = "Sending…";
+  try{
+    const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.origin + location.pathname }});
+    if(error) throw error;
+    msg.style.color = "var(--good)"; msg.textContent = "Check your inbox — tap the magic link to finish signing in.";
+    $("#authEmail").value = "";
+  }catch(e){ msg.style.color="var(--claret)"; msg.textContent = (e && e.message) || "Could not send link. Try again."; }
+  finally{ btn.disabled = false; btn.textContent = orig; }
+}
+
+async function signOut(){ try{ await sb.auth.signOut(); }catch(e){ console.warn(e); } }
+
+function bindAuthUI(){
+  $("#authBtn").addEventListener("click", ()=>{ if(session) signOut(); else openAuth(); });
+  $("#authX").addEventListener("click", closeAuth);
+  $("#authScrim").addEventListener("click", e=>{ if(e.target.id==="authScrim") closeAuth(); });
+  $("#authSend").addEventListener("click", sendMagicLink);
+  $("#authEmail").addEventListener("keydown", e=>{ if(e.key==="Enter") sendMagicLink(); });
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeAuth(); });
+}
+
+async function initAuth(){
+  sb = getSbClient();
+  if(!sb) return;                                  // demo/preview: session-only watchlist
+  const b = $("#authBtn"); if(b) b.hidden = false;
+  bindAuthUI();
+  bindAlertsUI();
+  try{
+    const { data } = await sb.auth.getSession();
+    session = data ? data.session : null;
+  }catch(e){ console.warn(e); }
+  renderAuthUI();
+  if(session) loadWatchlist();
+  sb.auth.onAuthStateChange((_evt, s)=>{
+    const was = !!session; session = s;
+    try{ sb.realtime.setAuth(s ? s.access_token : null); }catch(e){}
+    renderAuthUI();
+    if(s && !was){ closeAuth(); loadWatchlist(); }
+    if(!s && was){ watch.clear(); refreshWatchUI(); }
+  });
+}
+
+/* ---- saved searches / alerts ---- */
+let lastAuto = "";
+
+function describeQuery(priceMax){
+  const parts = [];
+  if(state.nr) parts.push("No-reserve");
+  if(state.make) parts.push(state.make);
+  if(state.q) parts.push('"'+state.q+'"');
+  if(state.cat) parts.push(state.cat);
+  if(state.fmt) parts.push(state.fmt === "online" ? "online" : "live");
+  if(state.ymin || state.ymax){
+    if(state.ymin && state.ymax) parts.push(state.ymin+"–"+state.ymax);
+    else if(state.ymin) parts.push(state.ymin+"+");
+    else parts.push("≤"+state.ymax);
+  }
+  if(priceMax) parts.push("≤ $"+(+priceMax).toLocaleString("en-US"));
+  if(state.house) parts.push("@ "+state.house);
+  return parts.join(" ").trim() || "all upcoming lots";
+}
+
+function buildQueryPayload(label, priceMax){
+  const p = { label };
+  if(state.make) p.make = state.make;
+  if(state.house) p.source_name = state.house;
+  if(state.cat) p.category = state.cat;
+  if(state.fmt) p.auction_type = state.fmt;
+  if(state.ymin) p.year_min = +state.ymin;
+  if(state.ymax) p.year_max = +state.ymax;
+  if(state.nr) p.no_reserve = true;
+  if(state.q) p.model_query = state.q;
+  if(priceMax) p.price_max = priceMax;
+  return p;
+}
+
+function parsePrice(){
+  const v = ($("#alertPrice").value || "").replace(/[^0-9.]/g, "");
+  return v ? Math.round(+v) : null;
+}
+function updateAlertSummary(){ $("#alertSummary").textContent = describeQuery(parsePrice()); }
+
+function updateAlertsUI(){
+  const b = $("#alertsBtn"); if(!b) return;
+  b.hidden = !(sb && session && DATA_MODE === "live");
+}
+
+function openAlerts(){
+  const auto = describeQuery(null);
+  $("#alertLabel").value = auto; lastAuto = auto;
+  $("#alertPrice").value = ""; $("#alertMsg").textContent = "";
+  updateAlertSummary();
+  $("#alertsScrim").classList.add("open"); document.body.style.overflow = "hidden";
+  loadQueries();
+  setTimeout(()=>$("#alertLabel").focus(), 60);
+}
+function closeAlerts(){ $("#alertsScrim").classList.remove("open"); document.body.style.overflow = ""; }
+
+async function createAlert(){
+  if(!sb || !session) return;
+  const priceMax = parsePrice();
+  const label = ($("#alertLabel").value || "").trim() || describeQuery(priceMax);
+  const msg = $("#alertMsg"), btn = $("#alertCreate");
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = "Saving…";
+  try{
+    const { error } = await sb.from("watch_queries").insert(buildQueryPayload(label, priceMax));
+    if(error) throw error;
+    msg.style.color = "var(--good)"; msg.textContent = "Alert saved — we'll email you on matches.";
+    await loadQueries();
+  }catch(e){ msg.style.color = "var(--claret)"; msg.textContent = (e && e.message) || "Could not save. Try again."; }
+  finally{ btn.disabled = false; btn.textContent = orig; }
+}
+
+async function deleteAlert(id){
+  if(!sb) return;
+  try{ await sb.from("watch_queries").delete().eq("id", id); await loadQueries(); }
+  catch(e){ console.warn("delete query failed:", e); }
+}
+
+async function loadQueries(){
+  const box = $("#queryList"); if(!box) return;
+  if(!sb || !session){ box.innerHTML = ""; return; }
+  try{
+    const { data, error } = await sb.from("watch_queries").select("*").order("created_at", { ascending:false });
+    if(error) throw error;
+    renderQueryList(data || []);
+  }catch(e){ box.innerHTML = '<p class="alert-empty">Couldn\'t load saved searches.</p>'; }
+}
+
+function renderQueryList(rows){
+  const box = $("#queryList"), head = $("#queryCount");
+  if(head) head.textContent = rows.length ? "("+rows.length+")" : "";
+  if(!rows.length){ box.innerHTML = '<p class="alert-empty">No saved searches yet. Set some filters, then save them above.</p>'; return; }
+  box.innerHTML = rows.map(q=>{
+    const bits = [];
+    if(q.no_reserve) bits.push("No reserve");
+    if(q.make) bits.push(esc(q.make));
+    if(q.model_query) bits.push('"'+esc(q.model_query)+'"');
+    if(q.category) bits.push(esc(q.category));
+    if(q.auction_type) bits.push(esc(q.auction_type));
+    if(q.year_min || q.year_max) bits.push((q.year_min||"")+"–"+(q.year_max||""));
+    if(q.price_max) bits.push("≤ $"+(+q.price_max).toLocaleString("en-US"));
+    if(q.source_name) bits.push("@ "+esc(q.source_name));
+    const sub = bits.join(" · ") || "All upcoming lots";
+    return '<div class="qrow"><div class="qinfo"><div class="qname">'+esc(q.label||sub)+'</div><div class="qsub">'+sub+'</div></div><button class="qdel" data-q="'+q.id+'" aria-label="Delete saved search">✕</button></div>';
+  }).join("");
+  box.querySelectorAll("[data-q]").forEach(b=>b.addEventListener("click", ()=>deleteAlert(+b.dataset.q)));
+}
+
+function bindAlertsUI(){
+  const b = $("#alertsBtn"); if(b) b.addEventListener("click", openAlerts);
+  $("#alertsX").addEventListener("click", closeAlerts);
+  $("#alertsScrim").addEventListener("click", e=>{ if(e.target.id === "alertsScrim") closeAlerts(); });
+  $("#alertCreate").addEventListener("click", createAlert);
+  $("#alertPrice").addEventListener("input", ()=>{
+    const na = describeQuery(parsePrice());
+    if($("#alertLabel").value === lastAuto) $("#alertLabel").value = na;
+    lastAuto = na; updateAlertSummary();
+  });
+  document.addEventListener("keydown", e=>{ if(e.key === "Escape") closeAlerts(); });
+}
+
+/* ============================================================
+   LIVE DISCUSSION — per-lot chat over Supabase Realtime
+   Reading is public; posting requires sign-in. Identity, rate
+   limits, and the content filter are all enforced server-side
+   (see auction-radar-chat-hardening.sql). Channel is torn down
+   when the sheet closes or another lot opens.
+   ============================================================ */
+let chatChannel = null;
+let lotChannel = null;
+const chatSeen = new Set();
+
+function teardownChat(){
+  try{ if(chatChannel && sb) sb.removeChannel(chatChannel); }catch(e){}
+  try{ if(lotChannel && sb) sb.removeChannel(lotChannel); }catch(e){}
+  chatChannel = null;
+  lotChannel = null;
+  chatSeen.clear();
+}
+
+function appendMessage(m){
+  if(!m || chatSeen.has(m.id)) return;
+  if(m.hidden){ chatSeen.add(m.id); return; }
+  chatSeen.add(m.id);
+  const box = $("#chatMsgs"); if(!box) return;
+  const empty = box.querySelector(".chat-empty"); if(empty) empty.remove();
+  const t = m.created_at ? new Date(m.created_at).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" }) : "";
+  const mine = session && session.user && m.user_id === session.user.id;
+  const el = document.createElement("div");
+  el.className = "chat-msg" + (mine ? " mine" : "");
+  el.dataset.mid = m.id;
+  const report = (session && !mine) ? '<button class="chat-report" data-mid="' + m.id + '" title="Report message" aria-label="Report message">\u2691</button>' : "";
+  el.innerHTML = '<div class="chat-meta"><span class="chat-author">' + esc(m.author || "guest")
+               + '</span><span class="chat-time">' + t + '</span>' + report + '</div>'
+               + '<div class="chat-body">' + esc(m.body || "") + '</div>';
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeMessage(id){
+  const box = $("#chatMsgs"); if(!box) return;
+  const el = box.querySelector('[data-mid="' + id + '"]'); if(el) el.remove();
+}
+
+async function reportMessage(id, btn){
+  if(!sb || !session) return;
+  try{
+    const { error } = await sb.from("message_reports").insert({ message_id: id });
+    if(error && !/duplicate|unique|conflict/i.test(error.message || "")) throw error;
+    if(btn){ btn.textContent = "reported"; btn.disabled = true; btn.classList.add("done"); }
+  }catch(e){ console.warn("report failed:", e); }
+}
+
+function updatePresence(){
+  const el = $("#chatPresence"); if(!el || !chatChannel) return;
+  let n = 0;
+  try{ n = Object.keys(chatChannel.presenceState()).length; }catch(e){}
+  el.innerHTML = n > 0 ? '<span class="live-dot"></span>' + n + ' here' : "";
+}
+
+async function initChat(lotId){
+  const mount = $("#chatMount"); if(!mount) return;
+  if(!sb){ mount.innerHTML = '<p class="chat-empty">Live discussion is available on the deployed site.</p>'; return; }
+
+  const signedIn = !!session;
+  mount.innerHTML =
+      '<div class="chat-msgs" id="chatMsgs"><p class="chat-empty">Loading\u2026</p></div>'
+    + (signedIn
+        ? '<div class="chat-input">'
+          +   '<input class="input chat-text" id="chatText" maxlength="500" placeholder="Add to the discussion\u2026">'
+          +   '<button class="btn primary chat-send" id="chatSend">Send</button>'
+          + '</div>'
+        : '<button class="chat-signin" id="chatSignin">Sign in to post \u2014 anyone can read</button>');
+
+  // history (public read)
+  try{
+    const { data, error } = await sb.from("lot_messages").select("*")
+      .eq("lot_id", lotId).eq("hidden", false).order("created_at", { ascending:true }).limit(100);
+    if(error) throw error;
+    const box = $("#chatMsgs"); box.innerHTML = "";
+    if(!data || !data.length) box.innerHTML = '<p class="chat-empty">No messages yet \u2014 ' + (signedIn ? "start the conversation." : "sign in to start it.") + '</p>';
+    (data || []).forEach(appendMessage);
+  }catch(e){
+    const box = $("#chatMsgs"); if(box) box.innerHTML = '<p class="chat-empty">Couldn\'t load messages.</p>';
+  }
+
+  // report delegation
+  const msgs = $("#chatMsgs");
+  if(msgs) msgs.addEventListener("click", e=>{
+    const b = e.target.closest(".chat-report"); if(b && !b.disabled) reportMessage(+b.dataset.mid, b);
+  });
+
+  // live stream — new messages + hides reach everyone (public read)
+  try{ sb.realtime.setAuth(session ? session.access_token : null); }catch(e){}
+  const presenceKey = (session && session.user && session.user.id) || ("guest-" + Math.random().toString(36).slice(2, 10));
+  chatChannel = sb.channel("lot-" + lotId, { config:{ presence:{ key: presenceKey } } })
+    .on("postgres_changes",
+        { event:"INSERT", schema:"public", table:"lot_messages", filter:"lot_id=eq." + lotId },
+        (payload)=>appendMessage(payload.new))
+    .on("postgres_changes",
+        { event:"UPDATE", schema:"public", table:"lot_messages", filter:"lot_id=eq." + lotId },
+        (payload)=>{ if(payload.new && payload.new.hidden) removeMessage(payload.new.id); })
+    .on("presence", { event:"sync" }, ()=>updatePresence())
+    .subscribe(async (status)=>{
+      const pres = $("#chatPresence");
+      if(status === "SUBSCRIBED"){
+        try{ await chatChannel.track({ at: Date.now() }); }catch(e){}
+        updatePresence();
+      } else if(status === "CHANNEL_ERROR" || status === "TIMED_OUT"){
+        if(pres) pres.innerHTML = '<span class="chat-warn">reconnecting\u2026</span>';
+        console.warn("chat channel status:", status, "\u2014 check Realtime is enabled for lot_messages");
+      }
+    });
+
+  if(!signedIn){
+    const b = $("#chatSignin"); if(b) b.addEventListener("click", openAuth);
+    return;
+  }
+
+  // send (server enforces identity + rate limit + content filter)
+  let lastSent = 0;
+  const send = async ()=>{
+    const inp = $("#chatText"); if(!inp) return;
+    const text = (inp.value || "").trim();
+    if(!text) return;
+    const now = Date.now();
+    if(now - lastSent < 1500) return;
+    lastSent = now;
+    inp.value = "";
+    try{
+      const { data, error } = await sb.from("lot_messages")
+        .insert({ lot_id: lotId, body: text }).select().single();
+      if(error) throw error;
+      appendMessage(data);                 // instant echo; realtime is deduped via chatSeen
+    }catch(e){
+      inp.value = text;
+      const msg = (e && e.message) ? e.message : "send failed";
+      console.warn("send failed:", msg);
+      flashChatError(msg);
+    }
+  };
+  $("#chatSend").addEventListener("click", send);
+  $("#chatText").addEventListener("keydown", e=>{ if(e.key === "Enter") send(); });
+}
+
+function flashChatError(msg){
+  const box = $("#chatMsgs"); if(!box) return;
+  const el = document.createElement("div");
+  el.className = "chat-err";
+  el.textContent = /rate|slow|filter|blocked|signed in/i.test(msg) ? msg : "Couldn\'t send that \u2014 try again.";
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+  setTimeout(()=>{ try{ el.remove(); }catch(e){} }, 4500);
+}
+
+/* ============================================================
+   LIVE BID / TIME — subscribe the open lot to auction_lots updates.
+   auction_lots is public-read, so this works signed-out too. The
+   ticking countdown re-reads l.closes on its own once we update it.
+   ============================================================ */
+function subscribeLot(lotId){
+  if(!sb) return;
+  lotChannel = sb.channel("lotdata-" + lotId)
+    .on("postgres_changes",
+        { event:"UPDATE", schema:"public", table:"auction_lots", filter:"id=eq." + lotId },
+        (payload)=>applyLotUpdate(payload.new))
+    .subscribe();
+}
+
+function applyLotUpdate(row){
+  if(!row) return;
+  const l = LOTS.find(x=>x.id === row.id); if(!l) return;
+  if(row.current_bid   != null) l.bid     = Number(row.current_bid);
+  if(row.estimate_low  != null) l.estLow  = Number(row.estimate_low);
+  if(row.estimate_high != null) l.estHigh = Number(row.estimate_high);
+  if(row.reserve_status)        l.reserve = row.reserve_status;
+  const close = row.auction_end_date || row.auction_start_date;
+  if(close){ const t = new Date(close).getTime(); if(Number.isFinite(t)) l.closes = t; }
+  refreshDetailPrice(l);
+  refreshCardPrice(l);
+}
+
+function refreshDetailPrice(l){
+  const card = document.getElementById("detailPrice");
+  if(!card) return;
+  const p = priceLabel(l);
+  card.innerHTML = '<div class="k">' + esc(p.k) + '</div><div class="v">' + esc(p.v) + '</div>'
+                 + (p.usd ? '<div class="sub">' + esc(p.usd) + '</div>' : '');
+  flash(card);
+}
+
+function refreshCardPrice(l){
+  const card = document.querySelector('.lot[data-id="' + l.id + '"]');
+  if(!card) return;
+  const p = priceLabel(l);
+  const v = card.querySelector(".price .v");
+  const usd = card.querySelector(".price .usd");
+  if(v){ v.textContent = p.v; flash(v); }
+  if(usd && p.usd) usd.textContent = p.usd;
+}
+
+function flash(el){
+  if(!el) return;
+  el.classList.remove("flash");
+  void el.offsetWidth;       // restart the animation
+  el.classList.add("flash");
+}
+
+boot();
+initAuth();
+</script>
+</body>
+</html>

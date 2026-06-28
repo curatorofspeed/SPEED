@@ -185,6 +185,33 @@
   .just-ended::after{content:"";position:absolute;inset:0;z-index:5;background:linear-gradient(105deg,transparent 20%,rgba(156,124,60,.55) 50%,transparent 80%);transform:translateX(-120%);animation:gold-sweep 1.2s ease-out 1;pointer-events:none}
   @keyframes gold-sweep{to{transform:translateX(120%)}}
 
+  /* ---------- featured lead lot — full-width editorial promotion of the #1 lot ---------- */
+  #lead:empty{display:none}
+  #lead{margin-bottom:26px}
+  .lot.lead{box-shadow:0 2px 4px rgba(33,30,24,.05)}
+  .lot.lead:hover{transform:translateY(-4px);box-shadow:0 30px 56px -26px rgba(33,30,24,.38)}
+  .lot.lead .marque{font-size:46px}
+  .lot.lead .hero{aspect-ratio:16/9}
+  .lot.lead .scrim{padding:64px 22px 20px}
+  .lot.lead .eyebrow{font-size:10px;margin-bottom:8px}
+  .lot.lead .h-title{font-size:29px}
+  .lot.lead .plate{top:14px;left:14px;font-size:10.5px;padding:6px 11px 5px}
+  .lot.lead .star{top:14px;right:14px;width:36px;height:36px;font-size:16px}
+  .lot.lead .body{padding:20px 22px 22px}
+  .lot.lead .price .v{font-size:24px}
+  .lot.lead .when .v{font-size:18px}
+  .lot.lead.ending::before{height:4px}
+  .lot .tag.feat{background:var(--ink);color:#f4efe6;border-color:var(--ink)}
+  @media(min-width:780px){
+    .lot.lead{display:grid;grid-template-columns:1.55fr 1fr;align-items:stretch}
+    .lot.lead .hero{aspect-ratio:auto;height:100%;min-height:380px;border-bottom:none;border-right:1px solid var(--rule)}
+    .lot.lead .body{padding:30px 32px;justify-content:space-between}
+    .lot.lead .ledger{flex-direction:column;align-items:flex-start;gap:20px}
+    .lot.lead .ledger::before{display:none}
+    .lot.lead .when{text-align:left}
+    .lot.lead .h-title{font-size:34px}
+  }
+
   .empty{text-align:center;padding:80px 20px;border:1px solid var(--rule);border-radius:var(--radius);background:var(--plate)}
   .empty h3{font-family:"Spectral",serif;font-weight:500;font-size:26px;margin:0 0 10px;color:var(--ink)}
   .empty p{color:var(--muted);margin:0 0 20px}
@@ -242,6 +269,7 @@
   .comp .desc{color:var(--ink-2);font-weight:500;font-family:"Spectral",serif;font-size:15px}
   .comp .desc small{display:block;color:var(--muted);font-size:10px;margin-top:3px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;font-family:"Hanken Grotesk",sans-serif}
   .comp .sold{font-family:"Spectral",serif;color:var(--ink);font-weight:500;font-size:15px;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .comp-empty{padding:14px 16px;font-size:13px;color:var(--muted);font-style:italic;line-height:1.5}
 
   .trend{display:flex;align-items:center;gap:20px;background:var(--plate-2);border:1px solid var(--rule);border-radius:var(--radius);padding:16px 18px}
   .trend svg{flex:none}
@@ -499,6 +527,7 @@
         </select>
       </div>
     </div>
+    <div id="lead"></div>
     <div class="grid" id="grid"></div>
     <div class="empty" id="empty" style="display:none">
       <h3>No lots match</h3>
@@ -718,7 +747,7 @@ function sortLots(arr){
 /* ============================================================
    render
    ============================================================ */
-function cardHTML(l){
+function cardHTML(l, lead=false){
   const p = priceLabel(l);
   const online = l.format==="online";
   const within = l.closes - Date.now();
@@ -727,6 +756,7 @@ function cardHTML(l){
   const starred = watch.has(l.id);
 
   const tags = [`<span class="tag fmt ${online?'online':'live'}"><span class="dot"></span>${online?'Online':'Live auction'}</span>`];
+  if(lead) tags.unshift(`<span class="tag feat">★ Featured</span>`);
   if(l.reserve==="no-reserve") tags.push(`<span class="tag nr">No reserve</span>`);
   if(soon) tags.push(`<span class="tag soon"><span class="dot"></span>Ending soon</span>`);
 
@@ -738,7 +768,7 @@ function cardHTML(l){
   const eyebrow = `<span>${esc(l.house)}</span>${l.location?`<span class="esep"></span><span class="ev">${esc(l.location)}</span>`:""}`;
 
   return `
-  <article class="lot fade ${soon?'ending':''}" tabindex="0" role="button" data-id="${l.id}" aria-label="${esc(l.year+' '+l.make+' '+l.model)}">
+  <article class="lot fade ${lead?'lead ':''}${soon?'ending':''}" tabindex="0" role="button" data-id="${l.id}" aria-label="${esc(l.year+' '+l.make+' '+l.model)}">
     <div class="hero" style="--hue:${l.hue}">
       ${l.img ? `<img class="hero-img" loading="lazy" alt="${esc(l.year+' '+l.make+' '+l.model)}" src="${esc(l.img)}" onerror="this.remove()">` : ""}
       <div class="marque">${esc(l.make)}</div>
@@ -765,12 +795,16 @@ function cardHTML(l){
 
 function render(){
   const filtered = sortLots(LOTS.filter(matches));
-  const grid = $("#grid"), empty = $("#empty");
+  const grid = $("#grid"), empty = $("#empty"), lead = $("#lead");
   if(filtered.length===0){
-    grid.innerHTML=""; grid.style.display="none"; empty.style.display="block";
+    grid.innerHTML=""; grid.style.display="none";
+    lead.innerHTML="";
+    empty.style.display="block";
   }else{
     empty.style.display="none"; grid.style.display="grid";
-    grid.innerHTML = filtered.map(cardHTML).join("");
+    const [head, ...rest] = filtered;
+    lead.innerHTML = cardHTML(head, true);
+    grid.innerHTML = rest.map(l=>cardHTML(l)).join("");
   }
   $("#resCount").textContent = `${filtered.length} of ${LOTS.length} lots`;
   bindCards();
@@ -840,7 +874,8 @@ function openDetail(id){
   teardownChat();
   const p = priceLabel(l);
   const within = l.closes - Date.now();
-  const comps = seededComps(l);
+  const live = (DATA_MODE === "live");
+  const comps = live ? [] : seededComps(l);
   const starred = watch.has(l.id);
 
   const specs = [
@@ -879,7 +914,7 @@ function openDetail(id){
       <div class="specs">${specs.map(s=>`<div class="spec"><div class="k">${s[0]}</div><div class="v">${esc(s[1]||"—")}</div></div>`).join("")}</div>
 
       <div class="sec-h">Comparable sales</div>
-      <div class="comps" id="compsBox">${comps.map(c=>`<div class="comp"><div class="desc">${esc(c.desc)}<small>${c.where} · ${c.when}</small></div><div class="sold">${c.sold}</div></div>`).join("")}</div>
+      <div class="comps" id="compsBox">${live ? `<div class="comp-empty">Loading comparable sales…</div>` : comps.map(c=>`<div class="comp"><div class="desc">${esc(c.desc)}<small>${c.where} · ${c.when}</small></div><div class="sold">${c.sold}</div></div>`).join("")}</div>
 
       <div class="sec-h">Market read</div>
       <div id="marketRead" class="market-read"></div>
@@ -896,14 +931,19 @@ function openDetail(id){
         <a class="btn primary" href="${l.sourceUrl}" target="_blank" rel="noopener">View on ${esc(l.house)} ↗</a>
         <button class="btn ghost ${starred?'on':''}" id="detailWatch" data-id="${l.id}">★ <span>${starred?"Watching":"Watch this car"}</span></button>
       </div>
-      <p style="font-size:11px;color:var(--muted-2);margin-top:16px;letter-spacing:.03em">Demo record — comps and trend are illustrative. Source link opens the auction house, not a stored copy.</p>
+      <p style="font-size:11px;color:var(--muted-2);margin-top:16px;letter-spacing:.03em">${live ? "Comparable sales are real recorded results from the pipeline; the market read is computed from them. Source link opens the auction house, not a stored copy." : "Demo record — comps and trend are illustrative. Source link opens the auction house, not a stored copy."}</p>
     </div>`;
 
   $("#detailWatch").addEventListener("click", ()=>toggleWatch(l.id, null));
   $("#sheetContent").querySelectorAll("[data-sim]").forEach(b=>{
     b.addEventListener("click", ()=>openDetail(+b.dataset.sim));
   });
-  renderMarketRead(l, comps);
+  if(live){
+    const mr = document.getElementById("marketRead");
+    if(mr) mr.innerHTML = '<p class="mr-note">Reading recent comparable sales…</p>';
+  } else {
+    renderMarketRead(l, comps);
+  }
   hydrateComps(l);
   initChat(l.id);
   subscribeLot(l.id);
@@ -1169,17 +1209,19 @@ function renderMarketRead(l, comps){
 }
 
 async function hydrateComps(l){
-  if(!HAS_SB) return;
-  try{
-    const rows = await sbRpc("lot_comps", { p_lot_id: l.id, p_limit: 6 });
-    if(rows && rows.length){
-      const box = document.getElementById("compsBox");
-      if(box){
-        box.innerHTML = rows.map(c=>`<div class="comp"><div class="desc">${esc(c.description||(l.make+' '+l.model))}<small>${esc(c.comparable_source||'Auction')} · ${c.sold_date?new Date(c.sold_date).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—"}</small></div><div class="sold">${money(Number(c.sold_price), c.currency||l.currency)}</div></div>`).join("");
-      }
-      renderMarketRead(l, rows);
-    }
-  }catch(e){ /* keep generated comps + seeded read */ }
+  // Demo mode keeps its illustrative comps (synthetic lot ids won't resolve).
+  // Live mode shows real recorded sales, or an honest empty state — never fakes.
+  if(!HAS_SB || DATA_MODE !== "live") return;
+  let rows = [];
+  try{ rows = await sbRpc("lot_comps", { p_lot_id: l.id, p_limit: 6 }) || []; }
+  catch(e){ rows = []; }
+  const box = document.getElementById("compsBox");
+  if(box){
+    box.innerHTML = rows.length
+      ? rows.map(c=>`<div class="comp"><div class="desc">${esc(c.description||(l.make+' '+l.model))}<small>${esc(c.comparable_source||'Auction')} · ${c.sold_date?new Date(c.sold_date).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—"}</small></div><div class="sold">${money(Number(c.sold_price), c.currency||l.currency)}</div></div>`).join("")
+      : `<div class="comp-empty">No comparable sales recorded yet. The pipeline logs sold ${esc(l.make)} prices into the comps database as similar lots close.</div>`;
+  }
+  renderMarketRead(l, rows);
 }
 
 function setLoading(){

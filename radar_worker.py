@@ -243,6 +243,75 @@ def first_image(img) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# small helpers for JSON-API sources (key names vary; be forgiving)
+# ---------------------------------------------------------------------------
+def _first(d: dict, *keys):
+    """First present, non-empty value among keys. ([]/'' are treated empty;
+    a literal False is returned, since it's a real value, not 'missing'.)"""
+    if not isinstance(d, dict):
+        return None
+    for k in keys:
+        if k in d:
+            v = d[k]
+            if v is not None and v != "" and v != []:
+                return v
+    return None
+
+
+def _first_num(d: dict, *keys) -> Optional[float]:
+    return to_float(_first(d, *keys))
+
+
+def _abs_url(base: str, u: Optional[str]) -> Optional[str]:
+    """Resolve a possibly-relative URL against a site base."""
+    if not u or not isinstance(u, str):
+        return None
+    u = u.strip()
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("http"):
+        return u
+    return base.rstrip("/") + "/" + u.lstrip("/")
+
+
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:80] or "lot"
+
+
+_DATE_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d", "%d %B %Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y",
+    "%A, %d %B %Y", "%m/%d/%Y",
+)
+
+
+def _to_iso(v) -> Optional[str]:
+    """Best-effort parse of a date string/epoch into an ISO-8601 timestamp.
+    Returns None (never a non-ISO string) so a timestamptz upsert can't break."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:                                   # already ISO-ish (handles date-only + offsets)
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d{10,13}", s):      # epoch seconds / millis
+        n = int(s)
+        if len(s) == 13:
+            n //= 1000
+        return dt.datetime.fromtimestamp(n, dt.timezone.utc).isoformat()
+    s2 = re.sub(r"\s+(?:GMT|UTC|EST|EDT|PST|PDT|CET|CEST)\b.*$", "", s).strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return dt.datetime.strptime(s2, fmt).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------------------
 # the normalized record -> maps 1:1 to the `auction_lots` table
 # ---------------------------------------------------------------------------
 def _now_iso() -> str:
@@ -349,6 +418,36 @@ class Fetcher:
                 log.warning("request error %s (attempt %d/%d): %s", url, attempt, MAX_RETRIES, e)
                 time.sleep(min(30, REQUEST_DELAY * (2 ** attempt)))
         log.error("giving up on %s after %d attempts", url, MAX_RETRIES)
+        return None
+
+    def post_json(self, url: str, payload: dict,
+                  headers: Optional[dict] = None) -> Optional[requests.Response]:
+        """POST a JSON body with the same throttle/backoff/robots policy as
+        get(). Reuses the session, so cookies picked up by a prior get() (e.g.
+        an ASP.NET antiforgery token) are sent automatically."""
+        if not self._allowed(url):
+            log.warning("robots.txt disallows %s — skipping", url)
+            return None
+        hdrs = {"Content-Type": "application/json;charset=utf-8",
+                "Accept": "application/json, text/plain, */*"}
+        if headers:
+            hdrs.update(headers)
+        body = json.dumps(payload)
+        for attempt in range(1, MAX_RETRIES + 1):
+            self._throttle()
+            try:
+                r = self.s.post(url, data=body, headers=hdrs, timeout=REQUEST_TIMEOUT)
+                if r.status_code == 429 or r.status_code >= 500:
+                    backoff = min(60, REQUEST_DELAY * (2 ** attempt))
+                    log.warning("HTTP %s on %s — backoff %.1fs", r.status_code, url, backoff)
+                    time.sleep(backoff)
+                    continue
+                r.raise_for_status()
+                return r
+            except requests.RequestException as e:
+                log.warning("post error %s (attempt %d/%d): %s", url, attempt, MAX_RETRIES, e)
+                time.sleep(min(30, REQUEST_DELAY * (2 ** attempt)))
+        log.error("giving up on POST %s after %d attempts", url, MAX_RETRIES)
         return None
 
 
@@ -751,10 +850,258 @@ class CarsAndBidsAdapter(JSONLDListingAdapter):
         return "Online"
 
 
+class RMSothebysAdapter(SourceAdapter):
+    """RM Sotheby's — consumes the site's own JSON search API instead of HTML.
+
+    The public lots grid is an Angular SPA, but it populates from a clean
+    endpoint:  POST /api/search/SearchLots?page=&pageSize=  with a small JSON
+    body {"Auction": "<CODE>", ...}. There is NO bearer token / API key — the
+    only credential is an AspNetCore.Antiforgery cookie that any visitor is
+    handed, so we warm a session with one GET, then POST per auction and page
+    through `pager`. These are physical-sale lots (scheduled date + pre-sale
+    estimate, no live countdown), so they ingest as auction_type='live'.
+
+    Auction codes roll over as sales come and go. Discovery order at runtime:
+      1. RADAR_RM_AUCTIONS env (comma list) — pins exact codes, highest pri.
+      2. scrape the upcoming/auctions pages + sitemap for /auctions/<code>/.
+      3. a built-in seed of known-upcoming codes (safety net).
+    Discovered + seed are unioned, so a stale seed never blocks a fresh sale
+    and a failed scrape never blocks a known one. Codes with no lots just
+    return empty and are skipped.
+
+    Field names in the JSON can vary, so mapping is defensive (_first/_first_num
+    over several candidate keys) and the FIRST lot's raw keys are logged on each
+    run — set RADAR_DUMP_RAW=1 to print the whole first item. Use that to lock
+    any key that doesn't map on the first live run.
+
+    Terms: facts + link back only, same rule as every other source. The data is
+    the site's own public API with no auth token; still, confirm RM's ToS.
+    """
+    config = SourceConfig(
+        name="RM Sotheby's",
+        base_url="https://rmsothebys.com",
+        auction_type="live",
+        scrape_method="api",
+        terms_notes="Public JSON search API; antiforgery-cookie only, no token. Facts + link back; confirm ToS.",
+    )
+
+    API = "https://rmsothebys.com/api/search/SearchLots"
+    WARMUP = "https://rmsothebys.com/auctions/{code}/lots/"
+    DISCOVERY_PAGES = (
+        "https://rmsothebys.com/auctions/upcoming",
+        "https://rmsothebys.com/auctions",
+        "https://rmsothebys.com/sitemap.xml",
+    )
+    PAGE_SIZE = 40
+    MAX_PAGES = 50                         # hard stop; pagers shouldn't exceed this
+    # Known upcoming sale codes (recon 2026-06). Safety net only — runtime
+    # discovery extends/overrides this. Update, or set RADAR_RM_AUCTIONS.
+    SEED_CODES = ("tc26", "mo26", "wp26", "hf26", "lf26", "mu26")
+    CODE_RE = re.compile(r"/auctions/([a-z0-9]{3,7})/", re.I)
+    _NON_CODES = {"upcoming", "results", "lots", "past", "calendar", "all", "live", "online"}
+
+    # ---- auction-code discovery -------------------------------------------
+    def discover_codes(self, fetcher: Fetcher) -> list[str]:
+        env = os.getenv("RADAR_RM_AUCTIONS", "").strip()
+        if env:
+            codes = [c.strip().lower() for c in env.split(",") if c.strip()]
+            log.info("RM: auction codes from RADAR_RM_AUCTIONS: %s", codes)
+            return codes
+        found: set[str] = set()
+        for page in self.DISCOVERY_PAGES:
+            try:
+                resp = fetcher.get(page)
+            except Exception:
+                resp = None
+            if not resp:
+                continue
+            for c in self.CODE_RE.findall(resp.text):
+                c = c.lower()
+                if c not in self._NON_CODES:
+                    found.add(c)
+            if found:
+                log.info("RM: discovered %d code(s) via %s", len(found), page)
+                break
+        union = list(dict.fromkeys(list(found) + list(self.SEED_CODES)))
+        log.info("RM: auction codes to query: %s", union)
+        return union
+
+    # ---- the API call ------------------------------------------------------
+    def _warm(self, fetcher: Fetcher, code: str) -> None:
+        """Grab the antiforgery cookie the API expects (best-effort)."""
+        try:
+            fetcher.get(self.WARMUP.format(code=code.lower()))
+        except Exception:
+            pass
+
+    def _search(self, fetcher: Fetcher, code: str, page: int) -> Optional[dict]:
+        url = f"{self.API}?page={page}&pageSize={self.PAGE_SIZE}"
+        payload = {
+            "LocationCountry": [], "Collection": None, "Auction": code.upper(),
+            "Day": None, "SortBy": "Default", "CategoryTag": [],
+            "StillForSaleOnly": False,
+        }
+        headers = {"Origin": self.config.base_url,
+                   "Referer": self.WARMUP.format(code=code.lower())}
+        resp = fetcher.post_json(url, payload, headers=headers)
+        if not resp:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            log.warning("RM: non-JSON response for %s p%d", code, page)
+            return None
+
+    # ---- orchestration (overrides SourceAdapter.collect) -------------------
+    def collect(self, fetcher: Fetcher, limit: Optional[int] = None) -> list[Lot]:
+        lots: list[Lot] = []
+        dumped = False
+        for code in self.discover_codes(fetcher):
+            self._warm(fetcher, code)
+            total: Optional[int] = None
+            for page in range(self.MAX_PAGES):
+                data = self._search(fetcher, code, page)
+                if not data:
+                    break
+                items = data.get("items") or data.get("Items") or []
+                pager = data.get("pager") or data.get("Pager") or {}
+                if total is None:
+                    total = (pager.get("totalItems") or pager.get("TotalItems")
+                             or (len(items) if items else 0))
+                    if items:
+                        log.info("RM: %s -> %s lot(s)", code.upper(), total)
+                if items and not dumped:
+                    log.info("RM: first lot raw keys: %s", sorted(items[0].keys()))
+                    if os.getenv("RADAR_DUMP_RAW"):
+                        print(json.dumps(items[0], indent=2, default=str))
+                    dumped = True
+                for raw in items:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        lot = self._to_lot(raw, code)
+                    except Exception as e:
+                        log.warning("RM: lot parse failed (%s): %s", code, e)
+                        continue
+                    if lot:
+                        lots.append(lot)
+                        if limit and len(lots) >= limit:
+                            return lots
+                if not items or (page + 1) * self.PAGE_SIZE >= (total or 0):
+                    break
+        return lots
+
+    # ---- field mapping (defensive; refine from the logged raw keys) --------
+    def _extract_image(self, raw: dict) -> Optional[str]:
+        for k in ("image", "imageUrl", "primaryImage", "mainImage", "heroImage",
+                  "coverImage", "thumbnail", "thumbnailUrl", "photo", "photoUrl"):
+            v = raw.get(k)
+            if isinstance(v, str) and v.strip():
+                return _abs_url(self.config.base_url, v)
+            got = first_image(v) if v else None
+            if got:
+                return _abs_url(self.config.base_url, got)
+        for k in ("images", "photos", "media", "gallery", "lotImages", "assets"):
+            v = raw.get(k)
+            if not v:
+                continue
+            got = first_image(v)
+            if not got and isinstance(v, list) and v and isinstance(v[0], dict):
+                d0 = v[0]
+                got = (d0.get("url") or d0.get("imageUrl") or d0.get("src")
+                       or d0.get("contentUrl") or d0.get("href"))
+            if got:
+                return _abs_url(self.config.base_url, got)
+        return None
+
+    def _extract_url(self, raw: dict, code: str) -> Optional[str]:
+        for k in ("url", "lotUrl", "detailUrl", "permalink", "path", "link",
+                  "seoUrl", "canonicalUrl", "pageUrl"):
+            v = raw.get(k)
+            if isinstance(v, str) and v.strip():
+                return _abs_url(self.config.base_url, v)
+        slug = _first(raw, "slug", "seoName", "seoSlug", "urlSlug")
+        if slug:
+            return f"{self.config.base_url}/auctions/{code.lower()}/lots/{slug}/"
+        return self.WARMUP.format(code=code.lower())   # always a valid link-back
+
+    @staticmethod
+    def _currency_from_text(s: str) -> Optional[str]:
+        for sym, c in _CUR.items():
+            if sym in (s or ""):
+                return c
+        return None
+
+    def _to_lot(self, raw: dict, code: str) -> Optional[Lot]:
+        title = _first(raw, "publicName", "PublicName", "title", "name",
+                       "lotTitle", "displayName", "headline")
+        if not title:
+            return None
+        title = html.unescape(str(title)).strip()
+        year, make, model, trim = normalize_title(title)
+
+        est = raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {}
+        low = _first_num(raw, "lowEstimate", "LowEstimate", "estimateLow",
+                         "lowEstimateValue", "estimateLowValue", "low")
+        high = _first_num(raw, "highEstimate", "HighEstimate", "estimateHigh",
+                          "highEstimateValue", "estimateHighValue", "high")
+        if low is None:
+            low = _first_num(est, "low", "lowEstimate", "min")
+        if high is None:
+            high = _first_num(est, "high", "highEstimate", "max")
+        est_text = _first(raw, "estimateText", "estimateDisplay", "formattedEstimate") or ""
+        if low is None and est_text:
+            low, _ = parse_money(est_text)
+
+        currency = (_first(raw, "currency", "currencyCode", "estimateCurrency", "Currency")
+                    or _first(est, "currency", "currencyCode")
+                    or self._currency_from_text(est_text) or "USD")
+        if not isinstance(currency, str):
+            currency = "USD"
+
+        auction_name = _first(raw, "auctionName", "saleName", "auctionTitle",
+                              "eventName", "sale") or f"RM Sotheby's {code.upper()}"
+        sale_iso = _to_iso(_first(raw, "auctionDate", "saleDate", "date", "startDate",
+                                  "auctionStartDate", "dateTime", "endDate"))
+        location = _first(raw, "location", "lotLocation", "saleLocation",
+                          "city", "geography")
+        lot_no = _first(raw, "lotNumber", "LotNumber", "lot", "lotNo", "number")
+        lot_no = str(lot_no) if lot_no is not None else None
+
+        reserve = "reserve"
+        wr = _first(raw, "withoutReserve", "noReserve", "isWithoutReserve")
+        if wr is True or (isinstance(wr, str) and wr.strip().lower() in ("true", "yes", "1")):
+            reserve = "no-reserve"
+
+        lot_id = (_first(raw, "id", "Id", "lotId", "uuid", "guid")
+                  or (f"{code.upper()}-{lot_no}" if lot_no else _slugify(title)))
+
+        return Lot(
+            source_name=self.config.name,
+            external_lot_id=f"rm:{lot_id}",
+            auction_type="live",
+            source_url=self._extract_url(raw, code),
+            auction_event_name=auction_name,
+            auction_end_date=sale_iso,
+            lot_number=lot_no,
+            year=year, make=make, model=model, trim=trim,
+            location=location,
+            estimate_low=low, estimate_high=high,
+            currency=currency.upper(),
+            reserve_status=reserve,
+            image_url=self._extract_image(raw),
+            description_short=_first(raw, "subHeading", "subtitle",
+                                    "shortDescription", "summary"),
+            category=category_for(year, title),
+            status="upcoming",
+        )
+
+
 # register adapters here as you add them (Collecting Cars, PCARMARKET, …)
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "bringatrailer": BringATrailerAdapter,
     "carsandbids": CarsAndBidsAdapter,
+    "rmsothebys": RMSothebysAdapter,
 }
 # resolve a stored source_name (e.g. "Bring a Trailer") back to its adapter
 ADAPTERS_BY_NAME = {cls.config.name: cls for cls in ADAPTERS.values()}
@@ -1169,6 +1516,80 @@ def selftest() -> None:
     assert res.get("sold_date") == "2026-01-05", res
     notmet = "<html><body>Bid to $48,000 (Reserve Not Met)</body></html>"
     assert BringATrailerAdapter().parse_result("u", notmet).get("sold") is False
+    print("    ok")
+
+    print("· JSON-API helpers (_first / _to_iso / _abs_url)")
+    assert _first({"a": "", "b": [], "c": "x"}, "a", "b", "c") == "x"
+    assert _first({"flag": False}, "flag") is False          # False is a real value
+    assert _first({}, "x") is None
+    assert _to_iso("2026-07-04T10:00:00").startswith("2026-07-04")
+    assert _to_iso("2026-07-04").startswith("2026-07-04")
+    assert _to_iso("Saturday, 4 July 2026").startswith("2026-07-04")
+    assert _to_iso("1783101600").startswith("2026-")          # epoch seconds
+    assert _to_iso("not a date") is None
+    assert _abs_url("https://rmsothebys.com", "/auctions/tc26/") == "https://rmsothebys.com/auctions/tc26/"
+    assert _abs_url("https://rmsothebys.com", "//cdn.x/y.jpg") == "https://cdn.x/y.jpg"
+    assert _abs_url("https://rmsothebys.com", "https://abs/z.jpg") == "https://abs/z.jpg"
+    print("    ok")
+
+    print("· RM Sotheby's adapter (JSON API, third source)")
+    assert ADAPTERS_BY_NAME.get("RM Sotheby's") is RMSothebysAdapter
+    # an API source must override collect() (no discover/parse_html path)
+    assert RMSothebysAdapter.collect is not SourceAdapter.collect
+    rm = RMSothebysAdapter()
+    rm_item = {
+        "id": "a1b2c3", "lotNumber": "107",
+        "publicName": "2006 Mercedes-Benz CLK DTM AMG Cabriolet",
+        "subHeading": "One of just 80 convertibles",
+        "lowEstimate": 450000, "highEstimate": 550000, "currency": "EUR",
+        "withoutReserve": False,
+        "auctionName": "The Tegernsee Auction", "auctionCode": "TC26",
+        "auctionDate": "2026-07-04T10:00:00",
+        "location": "Gmund am Tegernsee, Germany",
+        "image": "https://img.rm/clk-1.jpg",
+        "slug": "r0107-2006-mercedes-benz-clk-dtm-amg-cabriolet",
+    }
+    rr = rm._to_lot(rm_item, "tc26").to_row()
+    for k in ("year", "make", "model", "auction_type", "currency",
+              "estimate_low", "estimate_high", "lot_number", "auction_end_date"):
+        print(f"    {k:16} = {rr.get(k)}")
+    assert rr["year"] == 2006 and rr["make"] == "Mercedes-Benz", rr
+    assert rr["auction_type"] == "live", rr
+    assert rr["external_lot_id"] == "rm:a1b2c3", rr
+    assert rr["estimate_low"] == 450000.0 and rr["estimate_high"] == 550000.0, rr
+    assert rr["currency"] == "EUR", rr
+    assert rr["lot_number"] == "107", rr
+    assert rr["reserve_status"] == "reserve", rr
+    assert rr["auction_event_name"] == "The Tegernsee Auction", rr
+    assert rr["auction_end_date"].startswith("2026-07-04"), rr
+    assert rr["image_url"] == "https://img.rm/clk-1.jpg", rr
+    assert rr["source_url"].endswith(
+        "/auctions/tc26/lots/r0107-2006-mercedes-benz-clk-dtm-amg-cabriolet/"), rr
+    # robustness: nested estimate object, photos[] of dicts, relative lotUrl,
+    # missing id (-> code+lot fallback), no-reserve flag
+    rm_item2 = {
+        "lotNumber": 22, "title": "1995 Ferrari F50",
+        "estimate": {"low": 3200000, "high": 3800000, "currency": "USD"},
+        "saleName": "The Monterey Auction", "date": "2026-08-15",
+        "noReserve": True,
+        "photos": [{"imageUrl": "https://img.rm/f50.jpg"}],
+        "lotUrl": "/auctions/mo26/lots/f50/",
+    }
+    rr2 = rm._to_lot(rm_item2, "mo26").to_row()
+    assert rr2["make"] == "Ferrari" and rr2["year"] == 1995, rr2
+    assert rr2["estimate_low"] == 3200000.0 and rr2["currency"] == "USD", rr2
+    assert rr2["external_lot_id"] == "rm:MO26-22", rr2
+    assert rr2["reserve_status"] == "no-reserve", rr2
+    assert rr2["image_url"] == "https://img.rm/f50.jpg", rr2
+    assert rr2["source_url"].endswith("/auctions/mo26/lots/f50/"), rr2
+    # non-car / memorabilia with no year -> dropped by is_valid()
+    assert rm._to_lot({"publicName": "A Private Collection of Motoring Art"}, "tc26").is_valid() is False
+    # auction-code discovery: env override wins and is normalized
+    os.environ["RADAR_RM_AUCTIONS"] = "TC26, mo26 ,Wp26"
+    try:
+        assert rm.discover_codes(Fetcher(respect_robots=False)) == ["tc26", "mo26", "wp26"]
+    finally:
+        del os.environ["RADAR_RM_AUCTIONS"]
     print("    ok")
 
     print("\nALL SELF-TESTS PASSED ✓")

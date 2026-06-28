@@ -36,3 +36,12 @@ jobs:
         # RM is a JSON API; one run pulls every upcoming sale (auto-discovered).
         # Pin specific sales with RADAR_RM_AUCTIONS: "tc26,mo26" if ever needed.
         run: python radar_worker.py --source rmsothebys
+
+      - name: Harvest results (closed online lots -> comps)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        # Re-fetches BaT lots whose auction has ended, reads the sold price, and
+        # records it into sales_history (real comps). RM results are captured at
+        # ingest, so this pass covers the online houses.
+        run: python radar_worker.py --harvest-results

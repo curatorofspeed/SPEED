@@ -174,12 +174,20 @@
   .lot .when.urgent .k,.lot .when.urgent .v{color:var(--claret)}
   .lot .when.final{animation:cd-pulse 1s ease-in-out infinite}
   .lot .when.ended .k,.lot .when.ended .v{color:var(--brass)}
+  .lot .when.result .v{font-size:13px;line-height:1.25;white-space:normal}
+  .lot .when.result.sold .k,.lot .when.result.sold .v{color:var(--brass)}
+  .lot .when.result.nosale .k,.lot .when.result.nosale .v{color:var(--muted)}
+  .lot .when.result.pending .k,.lot .when.result.pending .v{color:var(--brass-soft)}
 
   .dotsep{width:3px;height:3px;border-radius:50%;background:var(--muted-2);flex:none}
 
   .price-card.final{animation:cd-pulse 1s ease-in-out infinite}
   .price-card.ended{border-left-color:var(--brass)}
   .price-card.ended .k,.price-card.ended .v{color:var(--brass)}
+  .price-card.result.sold .k,.price-card.result.sold .v{color:var(--brass)}
+  .price-card.result.sold{border-left-color:var(--brass)}
+  .price-card.result.nosale .k,.price-card.result.nosale .v{color:var(--muted-2)}
+  .price-card.result.pending .k,.price-card.result.pending .v{color:var(--brass-soft)}
   @keyframes cd-pulse{0%,100%{opacity:1}50%{opacity:.4}}
   .just-ended{position:relative;overflow:hidden}
   .just-ended::after{content:"";position:absolute;inset:0;z-index:5;background:linear-gradient(105deg,transparent 20%,rgba(156,124,60,.55) 50%,transparent 80%);transform:translateX(-120%);animation:gold-sweep 1.2s ease-out 1;pointer-events:none}
@@ -669,7 +677,7 @@ function buildDemoLots(){ return RAW.map((r,i)=>{
     id:i+1, lot:r.n, year:r.y, make:r.mk, model:r.md, trim:r.tr||"",
     cat:r.cat, house:r.house, event:r.ev, location:r.loc, currency:r.cur,
     estLow:r.lo||null, estHigh:r.hi||null, bid:r.bid||null,
-    reserve:r.res, format:r.fmt, closes,
+    reserve:r.res, format:r.fmt, closes, status:"upcoming",
     chassis:r.ch, engine:r.eng, trans:r.tx, miles:r.mi, blurb:r.blurb,
     hue:HUE[r.mk] ?? 210,
     sourceUrl:HOUSES[r.house] || "#"
@@ -700,6 +708,18 @@ function priceLabel(l){
   if(l.format==="online") return {k:"Current bid", v:money(l.bid,l.currency), usd:usd(l.bid,l.currency)};
   return {k:"Estimate", v:`${money(l.estLow,l.currency)} – ${money(l.estHigh,l.currency)}`, usd:usd(l.estHigh,l.currency)};
 }
+/* outcome of a concluded lot once the harvest pass has finalized it.
+   l.bid (current_bid) holds the sold price for 'sold', the high bid for
+   'withdrawn'. 'pending' = clock has crossed zero but no result harvested yet. */
+function resultLabel(l){
+  if(l.status==="sold")
+    return l.bid!=null ? {k:"Sold for", v:money(l.bid,l.currency), cls:"sold"}
+                       : {k:"Result", v:"Sold", cls:"sold"};
+  if(l.status==="withdrawn")
+    return l.bid!=null ? {k:"Reserve not met", v:"Bid to "+money(l.bid,l.currency), cls:"nosale"}
+                       : {k:"Result", v:"Did not sell", cls:"nosale"};
+  return {k:"Result", v:"Awaiting result", cls:"pending"};
+}
 function cd(ms){
   if(ms<=0) return "closed";
   const s=Math.floor(ms/1000), d=Math.floor(s/86400), h=Math.floor(s%86400/3600),
@@ -720,9 +740,10 @@ const state = {q:"",make:"",house:"",cat:"",fmt:"",ymin:"",ymax:"",nr:false,sort
 const watch = new Set();
 
 function isEnded(l){
-  // A finite close time in the past = the auction is over. Live/TBA lots with
-  // no date are NOT ended. Guards the lag between a lot closing and the harvest
-  // pass finalizing its status in the DB.
+  // A finalized result, or a finite close time in the past, = the auction's
+  // over. Live/TBA lots with no date are NOT ended. Guards the lag between a
+  // lot closing and the harvest pass finalizing its status in the DB.
+  if(l.status === "sold" || l.status === "withdrawn") return true;
   return Number.isFinite(l.closes) && l.closes <= Date.now();
 }
 function matches(l){
@@ -760,7 +781,6 @@ function cardHTML(l, lead=false){
   const online = l.format==="online";
   const within = l.closes - Date.now();
   const soon = online && within>0 && within < 12*HOUR;
-  const _ended = online && within<=0;
   const starred = watch.has(l.id);
 
   const tags = [`<span class="tag fmt ${online?'online':'live'}"><span class="dot"></span>${online?'Online':'Live auction'}</span>`];
@@ -768,10 +788,17 @@ function cardHTML(l, lead=false){
   if(l.reserve==="no-reserve") tags.push(`<span class="tag nr">No reserve</span>`);
   if(soon) tags.push(`<span class="tag soon"><span class="dot"></span>Ending soon</span>`);
 
-  const whenCls = _ended ? "ended" : `${within<6*HOUR?"urgent":""} ${within<60000?"final":""}`.trim();
-  const when = online
-    ? `<div class="when ${whenCls}" data-cd="${l.id}"><div class="k">${_ended?"Result":"Ends in"}</div><div class="v">${_ended?"Hammer down":cd(within)}</div></div>`
-    : `<div class="when"><div class="k">Sells</div><div class="v">${fmtDate(l.closes)}</div></div>`;
+  const ended = isEnded(l);
+  let when;
+  if(ended){
+    const r = resultLabel(l);
+    when = `<div class="when result ${r.cls}"><div class="k">${r.k}</div><div class="v">${esc(r.v)}</div></div>`;
+  } else if(online){
+    const whenCls = `${within<6*HOUR?"urgent":""} ${within<60000?"final":""}`.trim();
+    when = `<div class="when ${whenCls}" data-cd="${l.id}"><div class="k">Ends in</div><div class="v">${cd(within)}</div></div>`;
+  } else {
+    when = `<div class="when"><div class="k">Sells</div><div class="v">${fmtDate(l.closes)}</div></div>`;
+  }
 
   const eyebrow = `<span>${esc(l.house)}</span>${l.location?`<span class="esep"></span><span class="ev">${esc(l.location)}</span>`:""}`;
 
@@ -815,14 +842,14 @@ function render(){
     lead.innerHTML = cardHTML(head, true);
     grid.innerHTML = rest.map(l=>cardHTML(l)).join("");
   }
-  $("#resCount").textContent = `${filtered.length} of ${LOTS.length} lots`;
+  $("#resCount").textContent = `${filtered.length} of ${LOTS.filter(x=>!isEnded(x)).length} lots`;
   bindCards();
   updateGauges();
 }
 
 function updateGauges(){
   const now = Date.now();
-  $("#g-lots").textContent  = LOTS.length;
+  $("#g-lots").textContent  = LOTS.filter(x=>!isEnded(x)).length;
   $("#g-houses").textContent = new Set(LOTS.map(l=>l.house)).size;
   $("#g-nr").textContent    = LOTS.filter(l=>l.reserve==="no-reserve").length;
   $("#g-today").textContent = LOTS.filter(l=> l.closes-now>0 && l.closes-now < DAY).length;
@@ -893,10 +920,16 @@ function openDetail(id){
     ["Category", l.cat],["Reserve", l.reserve==="no-reserve" ? "No reserve" : "Reserve"]
   ];
 
-  const _dEnded = within<=0;
-  const timeBlock = l.format==="online"
-    ? `<div class="price-card amber ${_dEnded?"ended":(within<60000?"final":"")}"><div class="k">${_dEnded?"Result":"Ends in"}</div><div class="v" data-cd-detail="${l.id}">${_dEnded?"Hammer down":cd(within)}</div><div class="sub">${esc(l.house)} online block</div></div>`
-    : `<div class="price-card"><div class="k">Auction date</div><div class="v" style="font-size:17px">${fmtDate(l.closes)}</div><div class="sub">${esc(l.event)} · ${esc(l.location)}</div></div>`;
+  const dEnded = isEnded(l);
+  let timeBlock;
+  if(dEnded){
+    const r = resultLabel(l);
+    timeBlock = `<div class="price-card amber result ${r.cls}"><div class="k">${r.k}</div><div class="v">${esc(r.v)}</div><div class="sub">${esc(l.house)}${l.format==="online"?" online block":""}</div></div>`;
+  } else if(l.format==="online"){
+    timeBlock = `<div class="price-card amber ${within<60000?"final":""}"><div class="k">Ends in</div><div class="v" data-cd-detail="${l.id}">${cd(within)}</div><div class="sub">${esc(l.house)} online block</div></div>`;
+  } else {
+    timeBlock = `<div class="price-card"><div class="k">Auction date</div><div class="v" style="font-size:17px">${fmtDate(l.closes)}</div><div class="sub">${esc(l.event)} · ${esc(l.location)}</div></div>`;
+  }
 
   const similar = LOTS.filter(x=>x.make===l.make && x.id!==l.id).slice(0,3);
 
@@ -1093,7 +1126,7 @@ function tick(){
         flashEnd(_card || el, l.id);
         schedulePrune(_card);
       }
-      if(txt) txt.textContent = "Hammer down";
+      if(txt) txt.textContent = "Auction ended";
       const card = el.closest(".lot");
       if(card){ card.style.setProperty("--end-prog","0%"); card.classList.remove("urgent","closing"); }
     } else {
@@ -1117,7 +1150,7 @@ function tick(){
       const within = l.closes-now, card = dt.closest(".price-card"), k = card ? card.querySelector(".k") : null;
       if(within<=0){
         if(card && !card.classList.contains("ended")){ card.classList.add("ended"); card.classList.remove("final"); if(k) k.textContent="Result"; flashEnd(card, l.id); }
-        dt.textContent = "Hammer down";
+        dt.textContent = "Auction ended";
       } else {
         if(card){ card.classList.remove("ended"); card.classList.toggle("final", within<60000); }
         if(k) k.textContent = "Ends in";
@@ -1164,6 +1197,7 @@ function mapRow(r){
     bid:    r.current_bid   != null ? Number(r.current_bid)   : null,
     reserve:r.reserve_status||"reserve",
     format: r.auction_type||"live",
+    status: r.status||"upcoming",
     closes: Number.isFinite(closes) ? closes : null,
     chassis:r.chassis||"\u2014", engine:r.engine||"\u2014", trans:r.transmission||"\u2014",
     miles:r.mileage||"\u2014", blurb:r.description_short||"",

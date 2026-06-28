@@ -91,6 +91,12 @@
   /* ---------- controls ---------- */
   .controls{position:sticky;top:64px;z-index:30;background:rgba(239,236,229,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
   .controls .wrap{padding-top:16px;padding-bottom:16px}
+  .filter-toggle{display:none;align-items:center;gap:9px;width:100%;border:1px solid var(--rule);background:var(--plate);border-radius:var(--radius);padding:11px 14px;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--ink-2);cursor:pointer;transition:border-color .15s}
+  .filter-toggle:hover{border-color:var(--brass-soft)}
+  .filter-toggle .ftcount{background:var(--claret);color:#fbfaf6;border-radius:999px;padding:1px 8px;font-size:10px;font-weight:700;letter-spacing:.04em;line-height:1.5}
+  .filter-toggle .ftchev{margin-left:auto;color:var(--muted);transition:transform .2s;font-size:12px}
+  .controls.open .filter-toggle{border-color:var(--claret);color:var(--claret)}
+  .controls.open .filter-toggle .ftchev{transform:rotate(180deg)}
   .ctl-grid{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
   .field{display:flex;flex-direction:column;gap:6px}
   .field label{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);font-weight:600}
@@ -342,9 +348,11 @@
     .spec:not(:last-child){border-bottom:1px solid var(--rule)}
     .scrim{padding:0}
     .sheet{margin:0;border-radius:0;max-height:100vh;min-height:100vh;max-height:100dvh;min-height:100dvh}
-    /* the filter bar stacks to ~6 tall fields on phones — pinning it would eat
-       the screen, so let it scroll away; only the command bar stays sticky */
-    .controls{position:static}
+    /* filters collapse behind a sticky "Filters" button so they're one tap
+       away while scrolling, instead of pinning a ~6-field tower to the top */
+    .filter-toggle{display:flex}
+    .ctl-grid{display:none;margin-top:12px}
+    .controls.open .ctl-grid{display:flex}
     /* keep the command bar on one row on narrow phones */
     .brand b{font-size:15px;letter-spacing:.09em}
     .wl-txt{display:none}
@@ -482,7 +490,12 @@
 
 <section class="controls">
   <div class="wrap">
-    <div class="ctl-grid">
+    <button class="filter-toggle" id="filterToggle" aria-expanded="false" aria-controls="ctlGrid">
+      <span class="ftlabel">Filters</span>
+      <span class="ftcount" id="ftCount" hidden>0</span>
+      <span class="ftchev" aria-hidden="true">▾</span>
+    </button>
+    <div class="ctl-grid" id="ctlGrid">
       <div class="field search">
         <label for="q">Search</label>
         <input class="input" id="q" type="search" placeholder="Make, model, year, chassis…" autocomplete="off" />
@@ -857,6 +870,24 @@ function render(){
   $("#resCount").textContent = `${filtered.length} of ${LOTS.filter(x=>!isEnded(x)).length} lots`;
   bindCards();
   updateGauges();
+  syncFilterBadge();
+}
+
+// active filter count for the mobile Filters button (year range counts as one)
+function activeFilterCount(){
+  let n = 0;
+  if(state.q) n++;
+  if(state.make) n++;
+  if(state.house) n++;
+  if(state.cat) n++;
+  if(state.fmt) n++;
+  if(state.nr) n++;
+  if(state.ymin || state.ymax) n++;
+  return n;
+}
+function syncFilterBadge(){
+  const n = activeFilterCount(), b = $("#ftCount");
+  if(b){ b.textContent = n; b.hidden = (n === 0); }
 }
 
 function updateGauges(){
@@ -1076,6 +1107,11 @@ function bindControls(){
   });
   $("#reset").addEventListener("click", ()=>{ clearChips(); resetState(); state.sort="soon"; $("#sort").value="soon"; render(); });
   $("#emptyReset").addEventListener("click", ()=>{ clearChips(); resetState(); render(); });
+  $("#filterToggle").addEventListener("click", ()=>{
+    const c = document.querySelector(".controls");
+    const open = c.classList.toggle("open");
+    $("#filterToggle").setAttribute("aria-expanded", open ? "true" : "false");
+  });
   document.querySelectorAll(".chip").forEach(b=>b.addEventListener("click", ()=>applyChip(b.dataset.q, b)));
 
   $("#sheetX").addEventListener("click", closeDetail);

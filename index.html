@@ -125,7 +125,10 @@
   .lot{position:relative;background:var(--plate);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;cursor:pointer;transition:border-color .18s,transform .18s,box-shadow .18s;box-shadow:0 1px 2px rgba(33,30,24,.03)}
   .lot:hover{border-color:var(--brass-soft);transform:translateY(-5px);box-shadow:0 24px 44px -22px rgba(33,30,24,.34)}
   .lot:focus-visible{outline:2px solid var(--claret);outline-offset:2px}
-  .lot.ending::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--claret);z-index:6}
+  .lot.ending::before{content:"";position:absolute;top:0;left:0;height:3px;width:var(--end-prog,100%);background:var(--claret);z-index:6;transition:width .9s linear}
+  .lot.ending.urgent::before{animation:barPulse 1.3s ease-in-out infinite}
+  .lot.ending.closing::before{animation-duration:.5s}
+  @keyframes barPulse{0%,100%{opacity:1}50%{opacity:.28}}
 
   .lot .hero{position:relative;aspect-ratio:4/3;overflow:hidden;border-bottom:1px solid var(--rule);
     background:
@@ -1022,12 +1025,20 @@ function tick(){
         flashEnd(el.closest(".lot") || el, l.id);
       }
       if(txt) txt.textContent = "Hammer down";
+      const card = el.closest(".lot");
+      if(card){ card.style.setProperty("--end-prog","0%"); card.classList.remove("urgent","closing"); }
     } else {
       el.classList.remove("ended");
       el.classList.toggle("urgent", within<6*HOUR);
       el.classList.toggle("final", within<60000);
       if(k) k.textContent = "Ends in";
       if(txt) txt.textContent = cd(within);
+      const card = el.closest(".lot");
+      if(card){
+        card.style.setProperty("--end-prog", (Math.max(0,Math.min(1,within/HOUR))*100).toFixed(2)+"%");
+        card.classList.toggle("urgent", within<6*HOUR);
+        card.classList.toggle("closing", within<60000);
+      }
     }
   });
   const dt = document.querySelector("[data-cd-detail]");

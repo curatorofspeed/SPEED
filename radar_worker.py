@@ -381,6 +381,13 @@ class Supabase:
     def upsert_lots(self, rows: list[dict]) -> int:
         if not self.enabled or not rows:
             return 0
+        # PostgREST bulk insert requires every object to share the same keys,
+        # but optional specs (mileage, engine, …) are only on some lots. Union
+        # all keys and backfill the missing ones with None so the batch is uniform.
+        all_keys: set = set()
+        for row in rows:
+            all_keys.update(row.keys())
+        rows = [{k: row.get(k) for k in all_keys} for row in rows]
         r = requests.post(
             f"{self.url}/rest/v1/auction_lots?on_conflict=source_name,external_lot_id",
             headers={**self.h, "Prefer": "resolution=merge-duplicates,return=minimal"},

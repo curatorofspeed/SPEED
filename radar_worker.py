@@ -311,6 +311,28 @@ def _to_iso(v) -> Optional[str]:
     return None
 
 
+def _parse_estimate_range(s) -> tuple[Optional[float], Optional[float], Optional[str]]:
+    """(low, high, currency) from an RM-style estimate string such as
+    '€450,000 - €550,000' or '$1,000,000 - $1,500,000'. Returns (None, None,
+    None) for 'Estimate available upon request' / empty. Assumes comma
+    thousands separators (RM renders EUR/GBP that way too)."""
+    if not s or not isinstance(s, str):
+        return None, None, None
+    cur = None
+    for sym, c in _CUR.items():
+        if sym in s:
+            cur = c
+            break
+    vals = []
+    for n in re.findall(r"\d[\d,]*(?:\.\d+)?", s):
+        f = to_float(n)
+        if f is not None and f >= 100:        # skip stray small numbers
+            vals.append(f)
+    low = vals[0] if vals else None
+    high = vals[1] if len(vals) > 1 else None
+    return low, high, cur
+
+
 # ---------------------------------------------------------------------------
 # the normalized record -> maps 1:1 to the `auction_lots` table
 # ---------------------------------------------------------------------------
@@ -480,6 +502,17 @@ class Supabase:
     def upsert_lots(self, rows: list[dict]) -> int:
         if not self.enabled or not rows:
             return 0
+        # PostgREST runs one INSERT ... ON CONFLICT; the same conflict target
+        # appearing twice in a single batch trips PG 21000 ("cannot affect row a
+        # second time"). Happens when a lot is cross-listed across sub-auctions.
+        # Dedupe on (source_name, external_lot_id) — last write wins.
+        deduped: dict = {}
+        for row in rows:
+            deduped[(row.get("source_name"), row.get("external_lot_id"))] = row
+        if len(deduped) != len(rows):
+            log.info("deduped %d -> %d row(s) on (source_name, external_lot_id)",
+                     len(rows), len(deduped))
+        rows = list(deduped.values())
         # PostgREST bulk insert requires every object to share the same keys,
         # but optional specs (mileage, engine, …) are only on some lots. Union
         # all keys and backfill the missing ones with None so the batch is uniform.
@@ -927,12 +960,17 @@ class RMSothebysAdapter(SourceAdapter):
         return union
 
     # ---- the API call ------------------------------------------------------
-    def _warm(self, fetcher: Fetcher, code: str) -> None:
-        """Grab the antiforgery cookie the API expects (best-effort)."""
-        try:
-            fetcher.get(self.WARMUP.format(code=code.lower()))
-        except Exception:
-            pass
+    def _warm(self, fetcher: Fetcher) -> None:
+        """Grab the session-wide antiforgery cookie ONCE (best-effort). The
+        cookie is shared across all subsequent POSTs, so there's no need to warm
+        per-auction — and warming a per-code lots page that 404s would burn the
+        retry/backoff budget for nothing."""
+        for url in ("https://rmsothebys.com/auctions", "https://rmsothebys.com/"):
+            try:
+                if fetcher.get(url):
+                    return
+            except Exception:
+                pass
 
     def _search(self, fetcher: Fetcher, code: str, page: int) -> Optional[dict]:
         url = f"{self.API}?page={page}&pageSize={self.PAGE_SIZE}"
@@ -942,7 +980,7 @@ class RMSothebysAdapter(SourceAdapter):
             "StillForSaleOnly": False,
         }
         headers = {"Origin": self.config.base_url,
-                   "Referer": self.WARMUP.format(code=code.lower())}
+                   "Referer": f"{self.config.base_url}/auctions/{code.lower()}/lots/"}
         resp = fetcher.post_json(url, payload, headers=headers)
         if not resp:
             return None
@@ -956,8 +994,9 @@ class RMSothebysAdapter(SourceAdapter):
     def collect(self, fetcher: Fetcher, limit: Optional[int] = None) -> list[Lot]:
         lots: list[Lot] = []
         dumped = False
-        for code in self.discover_codes(fetcher):
-            self._warm(fetcher, code)
+        codes = self.discover_codes(fetcher)
+        self._warm(fetcher)                     # once; cookie is session-wide
+        for code in codes:
             total: Optional[int] = None
             for page in range(self.MAX_PAGES):
                 data = self._search(fetcher, code, page)
@@ -992,15 +1031,19 @@ class RMSothebysAdapter(SourceAdapter):
         return lots
 
     # ---- field mapping (defensive; refine from the logged raw keys) --------
+    # value must look like an image ref before we trust an ambiguous key
+    _IMG_LIKE = re.compile(r"https?://|^//|^/|\.(?:jpe?g|png|webp|avif|gif)", re.I)
+
     def _extract_image(self, raw: dict) -> Optional[str]:
-        for k in ("image", "imageUrl", "primaryImage", "mainImage", "heroImage",
-                  "coverImage", "thumbnail", "thumbnailUrl", "photo", "photoUrl"):
+        for k in ("header", "crop", "image", "imageUrl", "primaryImage", "mainImage",
+                  "heroImage", "coverImage", "thumbnail", "thumbnailUrl", "photo", "photoUrl"):
             v = raw.get(k)
-            if isinstance(v, str) and v.strip():
+            if isinstance(v, str) and v.strip() and self._IMG_LIKE.search(v.strip()):
                 return _abs_url(self.config.base_url, v)
-            got = first_image(v) if v else None
-            if got:
-                return _abs_url(self.config.base_url, got)
+            if v and not isinstance(v, str):
+                got = first_image(v)
+                if got:
+                    return _abs_url(self.config.base_url, got)
         for k in ("images", "photos", "media", "gallery", "lotImages", "assets"):
             v = raw.get(k)
             if not v:
@@ -1040,31 +1083,36 @@ class RMSothebysAdapter(SourceAdapter):
         title = html.unescape(str(title)).strip()
         year, make, model, trim = normalize_title(title)
 
+        # Estimates: RM ships ONE "preSaleEstimate" range string
+        # (e.g. "€450,000 - €550,000"); currency is embedded as the symbol.
+        # Fall back to numeric keys if a payload variant carries them.
         est = raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {}
-        low = _first_num(raw, "lowEstimate", "LowEstimate", "estimateLow",
-                         "lowEstimateValue", "estimateLowValue", "low")
-        high = _first_num(raw, "highEstimate", "HighEstimate", "estimateHigh",
-                          "highEstimateValue", "estimateHighValue", "high")
+        est_text = _first(raw, "preSaleEstimate", "estimateText", "estimateDisplay",
+                          "formattedEstimate", "estimate")
+        if not isinstance(est_text, str):
+            est_text = ""
+        low, high, est_cur = _parse_estimate_range(est_text)
         if low is None:
-            low = _first_num(est, "low", "lowEstimate", "min")
+            low = (_first_num(raw, "lowEstimate", "LowEstimate", "estimateLow", "low")
+                   or _first_num(est, "low", "lowEstimate", "min"))
         if high is None:
-            high = _first_num(est, "high", "highEstimate", "max")
-        est_text = _first(raw, "estimateText", "estimateDisplay", "formattedEstimate") or ""
-        if low is None and est_text:
-            low, _ = parse_money(est_text)
+            high = (_first_num(raw, "highEstimate", "HighEstimate", "estimateHigh", "high")
+                    or _first_num(est, "high", "highEstimate", "max"))
 
-        currency = (_first(raw, "currency", "currencyCode", "estimateCurrency", "Currency")
-                    or _first(est, "currency", "currencyCode")
-                    or self._currency_from_text(est_text) or "USD")
+        currency = (est_cur
+                    or _first(raw, "currency", "currencyCode", "estimateCurrency", "Currency")
+                    or _first(est, "currency", "currencyCode") or "USD")
         if not isinstance(currency, str):
             currency = "USD"
 
         auction_name = _first(raw, "auctionName", "saleName", "auctionTitle",
-                              "eventName", "sale") or f"RM Sotheby's {code.upper()}"
+                              "eventName", "auctionStyleName", "sale") \
+            or f"RM Sotheby's {code.upper()}"
+        # Per-lot JSON carries no sale date; it lives on the auction, not the lot.
         sale_iso = _to_iso(_first(raw, "auctionDate", "saleDate", "date", "startDate",
                                   "auctionStartDate", "dateTime", "endDate"))
         location = _first(raw, "location", "lotLocation", "saleLocation",
-                          "city", "geography")
+                          "city", "geography", "locationFlag")
         lot_no = _first(raw, "lotNumber", "LotNumber", "lot", "lotNo", "number")
         lot_no = str(lot_no) if lot_no is not None else None
 
@@ -1530,6 +1578,10 @@ def selftest() -> None:
     assert _abs_url("https://rmsothebys.com", "/auctions/tc26/") == "https://rmsothebys.com/auctions/tc26/"
     assert _abs_url("https://rmsothebys.com", "//cdn.x/y.jpg") == "https://cdn.x/y.jpg"
     assert _abs_url("https://rmsothebys.com", "https://abs/z.jpg") == "https://abs/z.jpg"
+    assert _parse_estimate_range("€450,000 - €550,000") == (450000.0, 550000.0, "EUR")
+    assert _parse_estimate_range("$1,000,000 - $1,500,000") == (1000000.0, 1500000.0, "USD")
+    assert _parse_estimate_range("£90,000 - £120,000")[2] == "GBP"
+    assert _parse_estimate_range("Estimate available upon request") == (None, None, None)
     print("    ok")
 
     print("· RM Sotheby's adapter (JSON API, third source)")
@@ -1584,12 +1636,61 @@ def selftest() -> None:
     assert rr2["source_url"].endswith("/auctions/mo26/lots/f50/"), rr2
     # non-car / memorabilia with no year -> dropped by is_valid()
     assert rm._to_lot({"publicName": "A Private Collection of Motoring Art"}, "tc26").is_valid() is False
+    # --- the REAL RM JSON shape (keys observed live) ---
+    # preSaleEstimate range string · 'lot' number · 'link' · 'id' · image under
+    # 'header' (a URL) while 'crop' holds crop coords that must be ignored.
+    rm_real = {
+        "id": "9f3a-tc26-107", "lot": "107",
+        "publicName": "2006 Mercedes-Benz CLK DTM AMG Cabriolet",
+        "preSaleEstimate": "€450,000 - €550,000",
+        "auctionStyleName": "The Tegernsee Auction",
+        "locationFlag": "Germany",
+        "header": "https://media.rmsothebys.com/tc26/107/hero.jpg",
+        "crop": "0,0,1600,1067",
+        "link": "/auctions/tc26/lots/r0107-clk-dtm-amg/",
+        "isStillForSale": True, "sold": False,
+    }
+    rr3 = rm._to_lot(rm_real, "tc26").to_row()
+    assert rr3["year"] == 2006 and rr3["make"] == "Mercedes-Benz", rr3
+    assert rr3["estimate_low"] == 450000.0 and rr3["estimate_high"] == 550000.0, rr3
+    assert rr3["currency"] == "EUR", rr3
+    assert rr3["lot_number"] == "107", rr3
+    assert rr3["external_lot_id"] == "rm:9f3a-tc26-107", rr3
+    assert rr3["auction_event_name"] == "The Tegernsee Auction", rr3
+    assert rr3["image_url"] == "https://media.rmsothebys.com/tc26/107/hero.jpg", rr3  # 'header' not 'crop'
+    assert rr3["source_url"].endswith("/auctions/tc26/lots/r0107-clk-dtm-amg/"), rr3
     # auction-code discovery: env override wins and is normalized
     os.environ["RADAR_RM_AUCTIONS"] = "TC26, mo26 ,Wp26"
     try:
         assert rm.discover_codes(Fetcher(respect_robots=False)) == ["tc26", "mo26", "wp26"]
     finally:
         del os.environ["RADAR_RM_AUCTIONS"]
+    print("    ok")
+
+    print("· upsert batch dedup (Postgres 21000 guard)")
+    sb = Supabase("https://x.supabase.co", "k")          # enabled (url+key)
+    captured: dict = {}
+    class _Resp:
+        status_code, text = 200, ""
+        def raise_for_status(self): pass
+    _orig_post = requests.post
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["rows"] = json
+        return _Resp()
+    requests.post = _fake_post
+    try:
+        n = sb.upsert_lots([
+            {"source_name": "RM Sotheby's", "external_lot_id": "rm:dupe", "year": 1},
+            {"source_name": "RM Sotheby's", "external_lot_id": "rm:dupe", "year": 2},
+            {"source_name": "RM Sotheby's", "external_lot_id": "rm:other", "year": 3},
+        ])
+    finally:
+        requests.post = _orig_post
+    assert n == 2, n
+    keys = {(r["source_name"], r["external_lot_id"]) for r in captured["rows"]}
+    assert keys == {("RM Sotheby's", "rm:dupe"), ("RM Sotheby's", "rm:other")}, captured["rows"]
+    dupe_row = next(r for r in captured["rows"] if r["external_lot_id"] == "rm:dupe")
+    assert dupe_row["year"] == 2, dupe_row                 # last write wins
     print("    ok")
 
     print("\nALL SELF-TESTS PASSED ✓")

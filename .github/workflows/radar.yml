@@ -1,9 +1,13 @@
 name: Auction Radar ingest
 
+# Keeps the live feed fresh by re-ingesting Bring a Trailer on a schedule.
+# (Alerts + hot-refresh can be added as extra steps later, once auth + email
+#  are wired up.)
+
 on:
   schedule:
-    - cron: "0 */2 * * *"
-  workflow_dispatch: {}
+    - cron: "0 */2 * * *"     # every 2 hours, UTC. Use "*/30 * * * *" for every 30 min.
+  workflow_dispatch: {}        # adds a manual "Run workflow" button for testing
 
 jobs:
   ingest:
@@ -24,3 +28,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python radar_worker.py --source bringatrailer --limit 40
+
+      - name: Ingest RM Sotheby's
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        # RM is a JSON API; one run pulls every upcoming sale (auto-discovered).
+        # Pin specific sales with RADAR_RM_AUCTIONS: "tc26,mo26" if ever needed.
+        run: python radar_worker.py --source rmsothebys

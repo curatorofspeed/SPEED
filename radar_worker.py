@@ -668,6 +668,21 @@ class BringATrailerAdapter(JSONLDListingAdapter):
                 seen.add(url)
                 yield url
 
+    # Real auction close time. Confirmed live, BaT exposes the same epoch three
+    # ways: "end_timestamp":<n>, data-ends="<n>", data-until="<n>" (seconds).
+    END_RE = re.compile(
+        r'"end_timestamp"\s*:\s*(\d{10})'
+        r'|data-(?:ends|until)="(\d{10})"',
+        re.I)
+
+    def extract_end_time(self, text: str, offers: dict) -> Optional[str]:
+        m = self.END_RE.search(text)
+        if m:
+            epoch = int(m.group(1) or m.group(2))
+            return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat()
+        # fall back to the generic JSON-LD / HTML hook
+        return super().extract_end_time(text, offers)
+
     def make_external_id(self, url: str) -> str:
         return "bat:" + url.rstrip("/").rsplit("/", 1)[-1]
 

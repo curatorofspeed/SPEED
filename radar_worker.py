@@ -481,14 +481,14 @@ class Fetcher:
             time.sleep(wait)
         self._last = time.monotonic()
 
-    def get(self, url: str) -> Optional[requests.Response]:
+    def get(self, url: str, headers: Optional[dict] = None) -> Optional[requests.Response]:
         if not self._allowed(url):
             log.warning("robots.txt disallows %s — skipping", url)
             return None
         for attempt in range(1, MAX_RETRIES + 1):
             self._throttle()
             try:
-                r = self.s.get(url, timeout=REQUEST_TIMEOUT)
+                r = self.s.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
                 if r.status_code == 429 or r.status_code >= 500:
                     backoff = min(60, REQUEST_DELAY * (2 ** attempt))
                     log.warning("HTTP %s on %s — backoff %.1fs", r.status_code, url, backoff)
@@ -1383,6 +1383,26 @@ class TheMarketAdapter(SourceAdapter):
     def __init__(self) -> None:
         self._live_by_id: Optional[dict] = None  # lazy cache for the hot-refresh parse()
 
+    # The Market sits behind Cloudflare; the worker's contactable-bot User-Agent
+    # gets a 403 on the public API route. These headers mirror the same-origin
+    # fetch() the site's own page makes to /api/listings/* (browser UA + JSON
+    # Accept + a Referer to its own site), which is what clears the WAF for this
+    # public route. Site-specific and opt-in — every other source keeps the
+    # worker's default identifying UA. Override the UA with RADAR_TM_UA (e.g.
+    # paste your own browser's UA string) if the default is ever blocked.
+    _HEADERS = {
+        "User-Agent": os.getenv(
+            "RADAR_TM_UA",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Referer": "https://www.themarket.co.uk/auctions/live",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+
     # ---- slug (matches The Market's own client-side route builder) ---------
     @staticmethod
     def _tm_slug(s: str) -> str:
@@ -1399,7 +1419,7 @@ class TheMarketAdapter(SourceAdapter):
     # ---- one page of a stage ----------------------------------------------
     def _page(self, fetcher: Fetcher, stage: str, page: int) -> tuple[list, dict]:
         url = self.API.format(stage=stage) + f"?page={page}"
-        resp = fetcher.get(url)
+        resp = fetcher.get(url, headers=self._HEADERS)
         if not resp:
             return [], {}
         try:
@@ -2239,7 +2259,7 @@ def selftest() -> None:
         status_code = 200
         def __init__(self, payload): self._p = payload
         def json(self): return self._p
-    def _fake_get(url):
+    def _fake_get(url, headers=None):
         if "/api/listings/live" in url and "page=1" in url:
             return _R({"data": [tm_live, {**tm_live, "id": "dead", "status": 5}],
                        "meta": {"total_pages": 1, "per_page": 51, "total": 2}})

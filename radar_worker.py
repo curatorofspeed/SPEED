@@ -385,6 +385,8 @@ class Supabase:
             f"{self.url}/rest/v1/auction_lots?on_conflict=source_name,external_lot_id",
             headers={**self.h, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json=rows, timeout=REQUEST_TIMEOUT)
+        if r.status_code >= 400:
+            log.error("Supabase upsert %s: %s", r.status_code, r.text[:600])
         r.raise_for_status()
         return len(rows)
 

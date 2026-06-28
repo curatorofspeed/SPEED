@@ -311,6 +311,32 @@ def _to_iso(v) -> Optional[str]:
     return None
 
 
+def _to_iso_tz(naive, tzname) -> Optional[str]:
+    """Localize a NAIVE wall-clock datetime string (e.g. '2026-06-29 12:00:00')
+    in an IANA timezone (e.g. 'Europe/London') and return an ISO-8601 *UTC*
+    timestamp. For sources that ship a local close time + a tz name rather than
+    an absolute instant. If the value already carries tz info (a 'T'/'Z'/offset)
+    or the tz database is unavailable, fall back to _to_iso (which treats the
+    value as naive/UTC) so a timestamptz upsert can never break."""
+    if not naive:
+        return None
+    s = str(naive).strip()
+    if (not tzname) or ("T" in s) or s.endswith("Z") or re.search(r"[+\-]\d\d:?\d\d$", s):
+        return _to_iso(naive)
+    try:
+        from zoneinfo import ZoneInfo
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                naive_dt = dt.datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+            aware = naive_dt.replace(tzinfo=ZoneInfo(str(tzname)))
+            return aware.astimezone(dt.timezone.utc).isoformat()
+    except Exception:
+        pass
+    return _to_iso(naive)
+
+
 def _parse_estimate_range(s) -> tuple[Optional[float], Optional[float], Optional[str]]:
     """(low, high, currency) from an RM-style estimate string such as
     '€450,000 - €550,000' or '$1,000,000 - $1,500,000'. Returns (None, None,
@@ -793,26 +819,33 @@ class JSONLDListingAdapter(SourceAdapter):
     def parse_result(self, url: str, text: str) -> dict:
         """Best-effort final outcome for a CLOSED listing. Returns
         {'sold':bool,'sold_price':float|None,'currency':str,'sold_date':str|None}.
-        Confirm the patterns against a real completed page for each source."""
+        For a reserve-not-met / 'Bid to' close it returns sold=False but a
+        'final_bid' (the high bid the auction reached) so the displayed figure
+        can be corrected to reality even though no sale occurred. Confirm the
+        patterns against a real completed page for each source."""
         head = text[:40000]
+        _CUR = {"£": "GBP", "€": "EUR", "$": "USD"}
         sold_m = re.search(r"sold\s+for[^0-9$£€]*([$£€])?\s*([\d][\d,]*)", head, re.I)
-        if not sold_m:
-            if re.search(r"reserve\s+not\s+met|did\s+not\s+sell|bid\s+to\b", head, re.I):
-                return {"sold": False}
-        if not sold_m:
-            return {"sold": False}
-        price = to_float(sold_m.group(2))
-        sym = sold_m.group(1) or ""
-        currency = {"£": "GBP", "€": "EUR", "$": "USD"}.get(sym, "USD")
-        sold_date = None
-        dm = re.search(r"sold\s+for[^.]*?on\s+([A-Z][a-z]+ \d{1,2},? \d{4})", head, re.I)
-        if dm:
-            try:
-                sold_date = dt.datetime.strptime(dm.group(1).replace(",", ""), "%B %d %Y").date().isoformat()
-            except ValueError:
-                sold_date = None
-        if price:
-            return {"sold": True, "sold_price": price, "currency": currency, "sold_date": sold_date}
+        if sold_m:
+            price = to_float(sold_m.group(2))
+            currency = _CUR.get(sold_m.group(1) or "", "USD")
+            sold_date = None
+            dm = re.search(r"sold\s+for[^.]*?on\s+([A-Z][a-z]+ \d{1,2},? \d{4})", head, re.I)
+            if dm:
+                try:
+                    sold_date = dt.datetime.strptime(dm.group(1).replace(",", ""), "%B %d %Y").date().isoformat()
+                except ValueError:
+                    sold_date = None
+            if price:
+                return {"sold": True, "sold_price": price, "currency": currency, "sold_date": sold_date}
+        # Not sold: capture the final high bid if the page shows one ("Bid to
+        # $76,000", "Reserve not met"). Records the real figure without logging
+        # it as a comp.
+        bid_m = re.search(r"bid\s+to[^0-9$£€]*([$£€])?\s*([\d][\d,]*)", head, re.I)
+        if bid_m:
+            fb = to_float(bid_m.group(2))
+            if fb:
+                return {"sold": False, "final_bid": fb, "currency": _CUR.get(bid_m.group(1) or "", "USD")}
         return {"sold": False}
 
 
@@ -1304,11 +1337,236 @@ class RMSothebysAdapter(SourceAdapter):
         )
 
 
+class TheMarketAdapter(SourceAdapter):
+    """The Market by Bonhams — online daily timed auctions (themarket.co.uk).
+
+    A Nuxt (Vue) app: the listing data is NOT served as a standalone XHR — it's
+    rendered into window.__NUXT__ on the server. But that same data is produced
+    by a public Nuxt server route the app calls during render and on client nav:
+        GET /api/listings/<stage>?page=<n>
+    (stage = live | results | coming-soon | sealed | no-reserve). It returns
+    clean JSON {data:[...lots], meta:{pagination}} with no auth, so we hit it
+    directly instead of parsing __NUXT__ out of HTML.
+
+    Online house: each lot carries an exact close time (`end_date` wall-clock +
+    `timezone` IANA name) and a current high bid, so lots ingest as
+    auction_type='online' (status 'upcoming' while live, like BaT). The
+    /results stage feeds sold comps into sales_history through the normal run()
+    path — the same way a live house reports realized prices at ingest.
+
+    Money is in MINOR units (pence/cents): highest_bid 2800000 == £28,000, so we
+    divide by 100. The detail-page slug is rebuilt from make/model with The
+    Market's own rule (lowercase; keep [a-z0-9 -]; spaces->'-'; runs are NOT
+    collapsed, so '... & ...' -> '--'); routing is on the trailing UUID.
+
+    Terms: facts + link back only, same rule as every other source. Public
+    server route, no token; still, confirm The Market's ToS.
+    """
+    config = SourceConfig(
+        name="The Market by Bonhams",
+        base_url="https://www.themarket.co.uk",
+        auction_type="online",
+        scrape_method="api",
+        terms_notes="Public Nuxt server route (/api/listings/*); no token. Facts + link back; confirm ToS.",
+    )
+
+    SITE = "https://www.themarket.co.uk"
+    CDN = "https://cdn.themarket.co.uk"          # bunny.url from the page config
+    API = SITE + "/api/listings/{stage}"
+    PAGE_SIZE = 50                               # server default; used only as a 'last page' hint
+    MAX_PAGES = 15                               # hard stop for the live pager
+    # Pages of the (recent-first) results feed to pull for comps each run. Recent
+    # sales make the best comps and a couple pages covers far more than one
+    # ingest interval of closings. Override with RADAR_TM_RESULT_PAGES.
+    RESULT_PAGES = int(os.getenv("RADAR_TM_RESULT_PAGES", "2"))
+
+    def __init__(self) -> None:
+        self._live_by_id: Optional[dict] = None  # lazy cache for the hot-refresh parse()
+
+    # ---- slug (matches The Market's own client-side route builder) ---------
+    @staticmethod
+    def _tm_slug(s: str) -> str:
+        s = (s or "").lower()
+        s = re.sub(r"[^a-z0-9 -]", "", s)        # drop '/', '&', accents, …
+        return s.replace(" ", "-")               # runs preserved ('... & ...' -> '--')
+
+    def _detail_url(self, raw: dict) -> str:
+        uuid = str(raw.get("id") or "").strip()
+        mk = self._tm_slug(_first(raw, "make") or "") or "car"
+        md = self._tm_slug(_first(raw, "model") or "") or "lot"
+        return f"{self.SITE}/listings/{mk}/{md}/{uuid}"
+
+    # ---- one page of a stage ----------------------------------------------
+    def _page(self, fetcher: Fetcher, stage: str, page: int) -> tuple[list, dict]:
+        url = self.API.format(stage=stage) + f"?page={page}"
+        resp = fetcher.get(url)
+        if not resp:
+            return [], {}
+        try:
+            body = resp.json()
+        except ValueError:
+            log.warning("TheMarket: non-JSON from %s", url)
+            return [], {}
+        if isinstance(body, dict):
+            return (body.get("data") or []), (body.get("meta") or {})
+        return (body or []), {}
+
+    def _paginate(self, fetcher: Fetcher, stage: str, max_pages: int,
+                  limit: Optional[int] = None) -> Iterator[dict]:
+        seen = 0
+        for page in range(1, max_pages + 1):
+            data, meta = self._page(fetcher, stage, page)
+            if not data:
+                break
+            for raw in data:
+                if isinstance(raw, dict):
+                    yield raw
+                    seen += 1
+                    if limit and seen >= limit:
+                        return
+            total_pages = to_float(meta.get("total_pages")) if isinstance(meta, dict) else None
+            if total_pages and page >= int(total_pages):
+                break
+            if len(data) < self.PAGE_SIZE:       # short page -> last page
+                break
+
+    # ---- field mapping -----------------------------------------------------
+    @staticmethod
+    def _minor_to_major(v) -> Optional[float]:
+        n = to_float(v)
+        return round(n / 100.0, 2) if n is not None else None
+
+    def _to_lot(self, raw: dict, sold: bool = False) -> Optional[Lot]:
+        uuid = str(raw.get("id") or "").strip()
+        make = _first(raw, "make")
+        model = _first(raw, "model")
+        if not uuid or not make:
+            return None
+        year = None
+        ys = _first(raw, "year")
+        if ys is not None:
+            try:
+                year = int(str(ys)[:4])
+            except (TypeError, ValueError):
+                year = None
+        title = " ".join(str(x) for x in (year, make, model) if x)
+
+        currency = _first(raw, "currency") or "GBP"
+        currency = currency.upper() if isinstance(currency, str) else "GBP"
+
+        # exact close time: naive wall-clock 'end_date' read in 'timezone'.
+        end_iso = _to_iso_tz(_first(raw, "end_date"), _first(raw, "timezone"))
+
+        wr = _first(raw, "reserve_status") or ""
+        reserve = "no-reserve" if (isinstance(wr, str) and wr.lower() == "no-reserve") else "reserve"
+
+        lot_no = _first(raw, "lot_number")
+        lot_no = str(lot_no).strip() if lot_no is not None else None
+
+        location = _first(raw, "location_country_name", "location") or None
+
+        img = _first(raw, "image", "original_image")
+        image_url = _abs_url(self.CDN, img) if (img and CAPTURE_IMAGE_URLS) else None
+
+        common = dict(
+            source_name=self.config.name,
+            external_lot_id=f"tm:{uuid}",
+            auction_type="online",
+            source_url=self._detail_url(raw),
+            auction_end_date=end_iso,
+            lot_number=lot_no,
+            year=year, make=make, model=model,
+            location=location,
+            currency=currency,
+            reserve_status=reserve,
+            image_url=image_url,
+            description_short=_first(raw, "tagline"),
+            category=category_for(year, title),
+        )
+        if sold:
+            sold_price = self._minor_to_major(
+                _first_num(raw, "final_price", "offline_sold_price", "highest_bid"))
+            return Lot(auction_event_name="The Market", current_bid=sold_price,
+                       status="sold", **common)
+        return Lot(auction_event_name="Online",
+                   current_bid=self._minor_to_major(_first_num(raw, "highest_bid")),
+                   status="upcoming", **common)
+
+    # ---- collect: live board (+ recent results for comps) ------------------
+    def collect(self, fetcher: Fetcher, limit: Optional[int] = None) -> list[Lot]:
+        lots: list[Lot] = []
+        dumped = False
+        # 1) live board: status 1 == actively biddable; skip buy-now/ended (5).
+        for raw in self._paginate(fetcher, "live", self.MAX_PAGES, limit):
+            if not dumped:
+                log.info("TheMarket: first live lot raw keys: %s", sorted(raw.keys()))
+                if os.getenv("RADAR_DUMP_RAW"):
+                    print(json.dumps(raw, indent=2, default=str))
+                dumped = True
+            if raw.get("status") not in (1, "1") or raw.get("visible", True) is False:
+                continue
+            lot = self._to_lot(raw, sold=False)
+            if lot:
+                lots.append(lot)
+                if limit and len(lots) >= limit:
+                    return lots
+        # 2) recent results -> sold comps. run() routes status='sold' into
+        #    sales_history. Best-effort: never let it break the live ingest.
+        try:
+            n = 0
+            for raw in self._paginate(fetcher, "results", self.RESULT_PAGES):
+                lot = self._to_lot(raw, sold=True)
+                if lot and lot.current_bid:           # only real sales become comps
+                    lots.append(lot)
+                    n += 1
+            if n:
+                log.info("TheMarket: %d recent result(s) captured for comps", n)
+        except Exception as e:
+            log.warning("TheMarket: results pull skipped (%s)", e)
+        return lots
+
+    # ---- hot-refresh hook: resolve a lot from the (cached) live feed --------
+    def parse(self, url: str, fetcher: Fetcher) -> Optional[Lot]:
+        """refresh_hot calls this per closing-soon lot. Rather than fetch the
+        Nuxt detail page (data lives in __NUXT__, not a simple parse), pull the
+        live feed ONCE per refresh cycle and index it by id; each hot lot is then
+        a dict lookup. The adapter instance is recreated per refresh_hot run, so
+        the cache is always current within a run and never stale across runs."""
+        if self._live_by_id is None:
+            cache: dict = {}
+            for raw in self._paginate(fetcher, "live", self.MAX_PAGES):
+                if raw.get("status") in (1, "1") and raw.get("visible", True) is not False:
+                    lot = self._to_lot(raw, sold=False)
+                    if lot:
+                        cache[lot.external_lot_id] = lot
+            self._live_by_id = cache
+        uuid = url.rstrip("/").rsplit("/", 1)[-1]
+        return self._live_by_id.get(f"tm:{uuid}")
+
+    # ---- harvest hook: closed online lot -> outcome ------------------------
+    def parse_result(self, url: str, text: str) -> dict:
+        """harvest_results calls this for a closed online lot, passing the
+        detail-page HTML. The Market's authoritative outcome comes from the
+        /results feed pulled during collect() (which marks sold lots 'sold'
+        before harvest runs), so this is a light best-effort over the rendered
+        page; otherwise it reports no sale and the lot is finalized 'withdrawn'
+        until the next results ingest corrects it if it did in fact sell."""
+        head = text[:60000]
+        m = re.search(r"sold\s+for[^0-9£€$]*([£€$])?\s*([\d][\d,]*)", head, re.I)
+        if m:
+            price = to_float(m.group(2))
+            cur = {"£": "GBP", "€": "EUR", "$": "USD"}.get(m.group(1) or "", "GBP")
+            if price:
+                return {"sold": True, "sold_price": price, "currency": cur, "sold_date": None}
+        return {"sold": False}
+
+
 # register adapters here as you add them (Collecting Cars, PCARMARKET, …)
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "bringatrailer": BringATrailerAdapter,
     "carsandbids": CarsAndBidsAdapter,
     "rmsothebys": RMSothebysAdapter,
+    "themarket": TheMarketAdapter,
 }
 # resolve a stored source_name (e.g. "Bring a Trailer") back to its adapter
 ADAPTERS_BY_NAME = {cls.config.name: cls for cls in ADAPTERS.values()}
@@ -1615,7 +1873,9 @@ def harvest_results(dry_run: bool, limit: Optional[int]) -> None:
             })
             finals.append((c["id"], "sold", res["sold_price"]))
         else:
-            finals.append((c["id"], "withdrawn", None))
+            # Reserve not met / no sale: still correct current_bid to the final
+            # high bid when the page reports one, but don't record it as a comp.
+            finals.append((c["id"], "withdrawn", (res or {}).get("final_bid")))
     log.info("Found %d sold result(s) across %d closed lot(s)", len(sales), len(closed))
     if dry_run:
         print(json.dumps(sales[:10], indent=2, default=str))
@@ -1751,7 +2011,8 @@ def selftest() -> None:
     assert res.get("sold_price") == 92000.0, res
     assert res.get("sold_date") == "2026-01-05", res
     notmet = "<html><body>Bid to $48,000 (Reserve Not Met)</body></html>"
-    assert BringATrailerAdapter().parse_result("u", notmet).get("sold") is False
+    nm = BringATrailerAdapter().parse_result("u", notmet)
+    assert nm.get("sold") is False and nm.get("final_bid") == 48000.0, nm
     print("    ok")
 
     print("· JSON-API helpers (_first / _to_iso / _abs_url)")
@@ -1930,6 +2191,82 @@ def selftest() -> None:
     assert keys == {("RM Sotheby's", "rm:dupe"), ("RM Sotheby's", "rm:other")}, captured["rows"]
     dupe_row = next(r for r in captured["rows"] if r["external_lot_id"] == "rm:dupe")
     assert dupe_row["year"] == 2, dupe_row                 # last write wins
+    print("    ok")
+
+    print("· The Market by Bonhams adapter (Nuxt /api/listings JSON)")
+    tm = TheMarketAdapter()
+    # slug rule matches the site's own client-side route builder
+    assert TheMarketAdapter._tm_slug("Rolls-Royce") == "rolls-royce"
+    assert TheMarketAdapter._tm_slug("20/25 Doctors Coupé") == "2025-doctors-coup"
+    assert TheMarketAdapter._tm_slug("20 HP Limousine de Ville by Thrupp & Maberley") == \
+        "20-hp-limousine-de-ville-by-thrupp--maberley"
+    # wall-clock close time + IANA tz -> UTC instant (London = BST/UTC+1 here)
+    assert _to_iso_tz("2026-06-29 12:00:00", "Europe/London").startswith("2026-06-29T11:00:00"), \
+        _to_iso_tz("2026-06-29 12:00:00", "Europe/London")
+    # an already-absolute value is passed straight through
+    assert _to_iso_tz("2026-06-22T08:00:00.000000Z", "Europe/London").startswith("2026-06-22T08:00:00")
+    # a real live-feed record (decoded from window.__NUXT__)
+    tm_live = {
+        "id": "e7946edd-61a1-41f3-b7b6-b350ca4f5049",
+        "end_date": "2026-06-29 12:00:00", "timezone": "Europe/London",
+        "start_date": "2026-06-22T08:00:00.000000Z",
+        "image": "e7946edd-61a1-41f3-b7b6-b350ca4f5049/5f0.jpg?optimizer=image&width=650&format=jpg",
+        "lot_number": 5093, "location_country": "GB", "location_country_name": "United Kingdom",
+        "location": "THE MARKET HQ", "make": "Rolls-Royce", "model": "20/25 Doctors Coupé",
+        "highest_bid": 2800000, "highest_bid_formatted": "\u00a328,000",
+        "status": 1, "year": "1931", "currency": "GBP",
+        "reserve_status": "reserve-not-close", "visible": True, "bids_count": 6,
+    }
+    ll = tm._to_lot(tm_live, sold=False).to_row()
+    assert ll["year"] == 1931 and ll["make"] == "Rolls-Royce" and ll["model"] == "20/25 Doctors Coupé", ll
+    assert ll["auction_type"] == "online" and ll["status"] == "upcoming", ll
+    assert ll["current_bid"] == 28000.0 and ll["currency"] == "GBP", ll          # pence -> pounds
+    assert ll["reserve_status"] == "reserve", ll                                  # only no-reserve maps specially
+    assert ll["external_lot_id"] == "tm:e7946edd-61a1-41f3-b7b6-b350ca4f5049", ll
+    assert ll["lot_number"] == "5093", ll
+    assert ll["location"] == "United Kingdom", ll
+    assert ll["auction_end_date"].startswith("2026-06-29T11:00:00"), ll           # BST -> UTC
+    assert ll["source_url"] == ("https://www.themarket.co.uk/listings/rolls-royce/"
+                                "2025-doctors-coup/e7946edd-61a1-41f3-b7b6-b350ca4f5049"), ll
+    assert ll["image_url"].startswith("https://cdn.themarket.co.uk/"), ll
+    # no-reserve detection
+    nr = tm._to_lot({**tm_live, "reserve_status": "no-reserve"}, sold=False).to_row()
+    assert nr["reserve_status"] == "no-reserve", nr
+
+    # collect(): live filter keeps status==1, skips buy-now/ended (5); /results
+    # sold lots become comps via the normal run() path.
+    class _R:
+        status_code = 200
+        def __init__(self, payload): self._p = payload
+        def json(self): return self._p
+    def _fake_get(url):
+        if "/api/listings/live" in url and "page=1" in url:
+            return _R({"data": [tm_live, {**tm_live, "id": "dead", "status": 5}],
+                       "meta": {"total_pages": 1, "per_page": 51, "total": 2}})
+        if "/api/listings/results" in url and "page=1" in url:
+            return _R({"data": [{"id": "sold-1", "make": "Ferrari", "model": "Dino 246 GT",
+                                 "year": "1972", "currency": "GBP", "final_price": 35000000,
+                                 "end_date": "2026-06-20 12:00:00", "timezone": "Europe/London",
+                                 "lot_number": 4900, "reserve_status": "no-reserve",
+                                 "image": "x/y.jpg", "tagline": "Beautiful"}],
+                       "meta": {"total_pages": 1, "per_page": 51, "total": 1}})
+        return _R({"data": [], "meta": {"total_pages": 1}})
+    f = Fetcher(respect_robots=False)
+    f.get = _fake_get                                            # type: ignore[assignment]
+    got = {l.external_lot_id: l for l in tm.collect(f)}
+    assert "tm:e7946edd-61a1-41f3-b7b6-b350ca4f5049" in got, sorted(got)
+    assert "tm:dead" not in got, "status!=1 must be skipped"     # buy-now/ended filtered out
+    assert "tm:sold-1" in got and got["tm:sold-1"].status == "sold", sorted(got)
+    assert got["tm:sold-1"].current_bid == 350000.0, got["tm:sold-1"].current_bid  # 35000000 pence
+    comps = sold_sales_rows(list(got.values()))
+    assert any(c["external_id"] == "tm:sold-1" and c["sold_price"] == 350000.0 for c in comps), comps
+    # hot-refresh parse() resolves a lot by its trailing UUID from the live feed
+    tm2 = TheMarketAdapter()
+    f2 = Fetcher(respect_robots=False)
+    f2.get = _fake_get                                           # type: ignore[assignment]
+    refreshed = tm2.parse("https://www.themarket.co.uk/listings/rolls-royce/2025-doctors-coup/"
+                          "e7946edd-61a1-41f3-b7b6-b350ca4f5049", f2)
+    assert refreshed and refreshed.external_lot_id == "tm:e7946edd-61a1-41f3-b7b6-b350ca4f5049", refreshed
     print("    ok")
 
     print("\nALL SELF-TESTS PASSED ✓")

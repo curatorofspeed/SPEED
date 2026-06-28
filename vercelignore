@@ -1,0 +1,10 @@
+# These run on GitHub Actions / your own host — NOT on Vercel.
+# Excluding them stops Vercel from misdetecting this as a Python project.
+radar_worker.py
+requirements.txt
+
+# SQL is run by hand in Supabase; no need to ship it to Vercel.
+*.sql
+
+# Docs
+DEPLOY.md

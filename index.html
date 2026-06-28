@@ -662,6 +662,7 @@ function jitter(ms){ return ms + Math.floor((Math.random()-.5) * Math.min(ms*0.0
 
 let LOTS = [];
 let SOURCES = [];
+let inWatchlist = false;   // true while the watchlist view is showing (suppresses lead auto-prune)
 function buildDemoLots(){ return RAW.map((r,i)=>{
   const closes = r.fmt==="online" ? NOW + jitter(r.h*HOUR) : NOW + r.d*DAY;
   return {
@@ -718,7 +719,14 @@ function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;
 const state = {q:"",make:"",house:"",cat:"",fmt:"",ymin:"",ymax:"",nr:false,sort:"soon"};
 const watch = new Set();
 
+function isEnded(l){
+  // A finite close time in the past = the auction is over. Live/TBA lots with
+  // no date are NOT ended. Guards the lag between a lot closing and the harvest
+  // pass finalizing its status in the DB.
+  return Number.isFinite(l.closes) && l.closes <= Date.now();
+}
 function matches(l){
+  if(isEnded(l)) return false;          // keep sold/expired lots off the active board (and out of the lead)
   if(state.make && l.make!==state.make) return false;
   if(state.house && l.house!==state.house) return false;
   if(state.cat && l.cat!==state.cat) return false;
@@ -735,7 +743,7 @@ function matches(l){
 function sortLots(arr){
   const s=state.sort;
   return arr.sort((a,b)=>{
-    if(s==="soon") return a.closes-b.closes;
+    if(s==="soon") return (a.closes ?? Infinity) - (b.closes ?? Infinity);
     if(s==="high") return lotValue(b)-lotValue(a);
     if(s==="low")  return lotValue(a)-lotValue(b);
     if(s==="year-new") return b.year-a.year;
@@ -794,6 +802,7 @@ function cardHTML(l, lead=false){
 }
 
 function render(){
+  inWatchlist = false;
   const filtered = sortLots(LOTS.filter(matches));
   const grid = $("#grid"), empty = $("#empty"), lead = $("#lead");
   if(filtered.length===0){
@@ -1031,7 +1040,9 @@ function bindControls(){
     if(watch.size===0){ alert("Your watchlist is empty. Tap ★ on any car to track it. (Session-only in this demo — Supabase persists it in production.)"); return; }
     clearChips(); resetState();
     state.q=""; render();
-    // filter view to watched
+    // filter view to watched (keeps ended lots — your watchlist shows results)
+    inWatchlist = true;
+    $("#lead").innerHTML = "";          // no featured active lot above the watchlist
     const grid=$("#grid");
     const watched = sortLots(LOTS.filter(l=>watch.has(l.id)));
     grid.style.display="grid"; $("#empty").style.display="none";
@@ -1050,6 +1061,22 @@ function flashEnd(el, id){
   setTimeout(()=>{ try{ el.classList.remove("just-ended"); }catch(e){} }, 1500);
 }
 
+function schedulePrune(card){
+  // After a lot crosses zero on screen, let the gold sweep play, then drop it
+  // off the active board. If it was the featured lead, re-render to promote the
+  // next soonest live lot (so Featured never sits on a sold result). Skipped in
+  // the watchlist view, which intentionally keeps ended lots as results.
+  if(!card || inWatchlist) return;
+  const wasLead = card.classList.contains("lead");
+  setTimeout(()=>{
+    try{
+      if(inWatchlist) return;
+      if(wasLead) render();
+      else if(card.isConnected) card.remove();
+    }catch(e){}
+  }, 1700);
+}
+
 function tick(){
   const now = Date.now();
   document.querySelectorAll("[data-cd]").forEach(el=>{
@@ -1062,7 +1089,9 @@ function tick(){
         el.classList.remove("urgent","final");
         el.classList.add("ended");
         if(k) k.textContent = "Result";
-        flashEnd(el.closest(".lot") || el, l.id);
+        const _card = el.closest(".lot");
+        flashEnd(_card || el, l.id);
+        schedulePrune(_card);
       }
       if(txt) txt.textContent = "Hammer down";
       const card = el.closest(".lot");

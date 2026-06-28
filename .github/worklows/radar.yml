@@ -1,0 +1,30 @@
+name: Auction Radar ingest
+
+# Keeps the live feed fresh by re-ingesting Bring a Trailer on a schedule.
+# (Alerts + hot-refresh can be added as extra steps later, once auth + email
+#  are wired up.)
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"     # every 2 hours, UTC. Use "*/30 * * * *" for every 30 min.
+  workflow_dispatch: {}        # adds a manual "Run workflow" button for testing
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest Bring a Trailer
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python radar_worker.py --source bringatrailer --limit 40

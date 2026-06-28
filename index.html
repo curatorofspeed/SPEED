@@ -661,7 +661,8 @@ function cd(ms){
   return `${p(h)}:${p(m)}:${p(ss)}`;
 }
 function fmtDate(ms){
-  return new Date(ms).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+  if(ms==null || !Number.isFinite(+ms) || +ms<=0) return "Date TBA";
+  return new Date(+ms).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
@@ -1058,7 +1059,9 @@ async function sbFetch(path){
 
 /* map a v_radar_lots row -> the in-app lot shape the renderer expects */
 function mapRow(r){
-  const closes = new Date(r.closes_at || r.auction_end_date || r.auction_start_date).getTime();
+  const _raw = r.closes_at || r.auction_end_date || r.auction_start_date;
+  const _t = _raw ? new Date(_raw).getTime() : NaN;
+  const closes = Number.isFinite(_t) && _t > 0 ? _t : null;
   return {
     id:r.id, lot:r.lot_number || `#${r.id}`, year:r.year, make:r.make, model:r.model, trim:r.trim||"",
     cat:r.category||"Classic", house:r.source_name, event:r.auction_event_name||"", location:r.location||"",
@@ -1068,7 +1071,7 @@ function mapRow(r){
     bid:    r.current_bid   != null ? Number(r.current_bid)   : null,
     reserve:r.reserve_status||"reserve",
     format: r.auction_type||"live",
-    closes: Number.isFinite(closes) ? closes : Date.now()+7*DAY,
+    closes: Number.isFinite(closes) ? closes : null,
     chassis:r.chassis||"\u2014", engine:r.engine||"\u2014", trans:r.transmission||"\u2014",
     miles:r.mileage||"\u2014", blurb:r.description_short||"",
     hue:HUE[r.make] ?? 210,

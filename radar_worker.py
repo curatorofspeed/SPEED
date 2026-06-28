@@ -333,6 +333,30 @@ def _parse_estimate_range(s) -> tuple[Optional[float], Optional[float], Optional
     return low, high, cur
 
 
+_FLAG_CC_RE = re.compile(r"/([A-Za-z]{2})\.png", re.I)
+_COUNTRY_BY_CC = {
+    "us": "USA", "gb": "United Kingdom", "de": "Germany", "it": "Italy",
+    "fr": "France", "es": "Spain", "ch": "Switzerland", "nl": "Netherlands",
+    "be": "Belgium", "at": "Austria", "jp": "Japan", "ca": "Canada",
+    "au": "Australia", "mc": "Monaco", "pt": "Portugal", "se": "Sweden",
+    "dk": "Denmark", "no": "Norway", "ie": "Ireland", "lu": "Luxembourg",
+    "ae": "United Arab Emirates", "sg": "Singapore", "hk": "Hong Kong",
+    "nz": "New Zealand", "za": "South Africa", "br": "Brazil",
+}
+
+
+def _country_from_flag(s) -> Optional[str]:
+    """RM ships location as a flag image path '/media/.../Flags/<id>/gb.png';
+    the 2-letter code before .png is the country. Map it to a name."""
+    if not s or not isinstance(s, str):
+        return None
+    m = _FLAG_CC_RE.search(s)
+    if not m:
+        return None
+    cc = m.group(1).lower()
+    return _COUNTRY_BY_CC.get(cc, cc.upper())
+
+
 # ---------------------------------------------------------------------------
 # the normalized record -> maps 1:1 to the `auction_lots` table
 # ---------------------------------------------------------------------------
@@ -921,8 +945,8 @@ class RMSothebysAdapter(SourceAdapter):
     API = "https://rmsothebys.com/api/search/SearchLots"
     WARMUP = "https://rmsothebys.com/auctions/{code}/lots/"
     DISCOVERY_PAGES = (
-        "https://rmsothebys.com/auctions/upcoming",
-        "https://rmsothebys.com/auctions",
+        "https://rmsothebys.com/auctions",          # serves the codes; try first
+        "https://rmsothebys.com/auctions/upcoming",  # 404s currently — fallback only
         "https://rmsothebys.com/sitemap.xml",
     )
     PAGE_SIZE = 40
@@ -990,12 +1014,109 @@ class RMSothebysAdapter(SourceAdapter):
             log.warning("RM: non-JSON response for %s p%d", code, page)
             return None
 
+    # ---- auction-level metadata (date/name/location) -----------------------
+    # The per-lot JSON has no date; it lives on the auction. We look first in the
+    # SearchLots response envelope (already fetched), then fall back to the
+    # auction page's schema.org Event block.
+    AUCTION_PAGE = "https://rmsothebys.com/auctions/{code}/"
+    _DATE_KEYS = ("auctionDate", "date", "startDate", "saleDate", "auctionStartDate",
+                  "dateFrom", "startsAt", "start", "beginDate", "startDateTime",
+                  "auctionEndDate", "endDate", "dateUtc")
+
+    def _meta_from_response(self, data: dict) -> dict:
+        """Pull date/name/location from the response envelope's options blocks."""
+        out: dict = {}
+        opts: dict = {}
+        for k in ("options", "Options", "availableOptions", "AvailableOptions",
+                  "auction", "Auction"):
+            v = data.get(k)
+            if isinstance(v, dict):
+                opts.update(v)
+        for k in self._DATE_KEYS:
+            iso = _to_iso(opts.get(k))
+            if iso:
+                out["date"] = iso
+                break
+        if "date" not in out:                       # multi-day sales: take earliest
+            for k in ("days", "auctionDays", "Days", "dates"):
+                arr = opts.get(k)
+                if isinstance(arr, list) and arr:
+                    cands = []
+                    for d in arr:
+                        if isinstance(d, dict):
+                            for dk in ("date", "startDate", "day", "value", "dateUtc"):
+                                iso = _to_iso(d.get(dk))
+                                if iso:
+                                    cands.append(iso)
+                        else:
+                            iso = _to_iso(d)
+                            if iso:
+                                cands.append(iso)
+                    if cands:
+                        out["date"] = min(cands)
+                        break
+        name = _first(opts, "auctionName", "name", "title", "header", "saleName")
+        if name:
+            out["name"] = name
+        loc = _first(opts, "location", "city", "venue", "saleLocation", "locationName")
+        if loc:
+            out["location"] = loc
+        return out
+
+    def _meta_from_page(self, fetcher: Fetcher, code: str) -> dict:
+        """Fallback: parse the auction page's schema.org Event for a start date."""
+        out: dict = {}
+        try:
+            resp = fetcher.get(self.AUCTION_PAGE.format(code=code.lower()))
+        except Exception:
+            resp = None
+        if not resp:
+            return out
+        text = resp.text
+        try:
+            ev = find_type(extract_jsonld(text), "Event", "SaleEvent",
+                           "ExhibitionEvent", "BusinessEvent")
+            if ev:
+                iso = _to_iso(ev.get("startDate") or ev.get("startTime"))
+                if iso:
+                    out["date"] = iso
+                if ev.get("name"):
+                    out.setdefault("name", ev["name"])
+                loc = ev.get("location")
+                if isinstance(loc, dict):
+                    out.setdefault("location", loc.get("name") or loc.get("address"))
+        except Exception:
+            pass
+        if "date" not in out:                       # a visible "4 July 2026"-style date
+            m = re.search(r'\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|'
+                          r'August|September|October|November|December)\s+20\d{2})\b', text)
+            if m:
+                iso = _to_iso(m.group(1))
+                if iso:
+                    out["date"] = iso
+        return out
+
+    def _auction_meta(self, fetcher: Fetcher, code: str, data: dict,
+                      cache: dict) -> dict:
+        if code not in cache:
+            meta = self._meta_from_response(data)
+            if "date" not in meta:                  # only hit the page if needed
+                for k, v in self._meta_from_page(fetcher, code).items():
+                    meta.setdefault(k, v)
+            cache[code] = meta
+            if meta.get("date"):
+                log.info("RM: %s sale date %s", code.upper(), meta["date"][:10])
+            else:
+                log.info("RM: %s — no sale date found (lots show 'Date TBA')", code.upper())
+        return cache[code]
+
     # ---- orchestration (overrides SourceAdapter.collect) -------------------
     def collect(self, fetcher: Fetcher, limit: Optional[int] = None) -> list[Lot]:
         lots: list[Lot] = []
         dumped = False
         codes = self.discover_codes(fetcher)
         self._warm(fetcher)                     # once; cookie is session-wide
+        meta_cache: dict[str, dict] = {}
         for code in codes:
             total: Optional[int] = None
             for page in range(self.MAX_PAGES):
@@ -1004,6 +1125,7 @@ class RMSothebysAdapter(SourceAdapter):
                     break
                 items = data.get("items") or data.get("Items") or []
                 pager = data.get("pager") or data.get("Pager") or {}
+                meta = self._auction_meta(fetcher, code, data, meta_cache)
                 if total is None:
                     total = (pager.get("totalItems") or pager.get("TotalItems")
                              or (len(items) if items else 0))
@@ -1013,12 +1135,16 @@ class RMSothebysAdapter(SourceAdapter):
                     log.info("RM: first lot raw keys: %s", sorted(items[0].keys()))
                     if os.getenv("RADAR_DUMP_RAW"):
                         print(json.dumps(items[0], indent=2, default=str))
+                        envelope = {k: v for k, v in data.items()
+                                    if k.lower() not in ("items",)}
+                        print("--- RESPONSE ENVELOPE (options / availableOptions / pager) ---")
+                        print(json.dumps(envelope, indent=2, default=str)[:3500])
                     dumped = True
                 for raw in items:
                     if not isinstance(raw, dict):
                         continue
                     try:
-                        lot = self._to_lot(raw, code)
+                        lot = self._to_lot(raw, code, meta)
                     except Exception as e:
                         log.warning("RM: lot parse failed (%s): %s", code, e)
                         continue
@@ -1035,7 +1161,9 @@ class RMSothebysAdapter(SourceAdapter):
     _IMG_LIKE = re.compile(r"https?://|^//|^/|\.(?:jpe?g|png|webp|avif|gif)", re.I)
 
     def _extract_image(self, raw: dict) -> Optional[str]:
-        for k in ("header", "crop", "image", "imageUrl", "primaryImage", "mainImage",
+        # RM puts the lot photo in "crop" (a CDN .webp). "header" is the sale
+        # NAME text, never an image — do not include it here.
+        for k in ("crop", "image", "imageUrl", "primaryImage", "mainImage",
                   "heroImage", "coverImage", "thumbnail", "thumbnailUrl", "photo", "photoUrl"):
             v = raw.get(k)
             if isinstance(v, str) and v.strip() and self._IMG_LIKE.search(v.strip()):
@@ -1075,7 +1203,8 @@ class RMSothebysAdapter(SourceAdapter):
                 return c
         return None
 
-    def _to_lot(self, raw: dict, code: str) -> Optional[Lot]:
+    def _to_lot(self, raw: dict, code: str, meta: Optional[dict] = None) -> Optional[Lot]:
+        meta = meta or {}
         title = _first(raw, "publicName", "PublicName", "title", "name",
                        "lotTitle", "displayName", "headline")
         if not title:
@@ -1083,38 +1212,50 @@ class RMSothebysAdapter(SourceAdapter):
         title = html.unescape(str(title)).strip()
         year, make, model, trim = normalize_title(title)
 
-        # Estimates: RM ships ONE "preSaleEstimate" range string
-        # (e.g. "€450,000 - €550,000"); currency is embedded as the symbol.
-        # Fall back to numeric keys if a payload variant carries them.
+        # Estimates live in "value" (e.g. "£500,000 - £800,000 GBP"); the
+        # "preSaleEstimate" key exists but is usually empty. Currency is the
+        # symbol inside the string. "valueType" flags non-estimate values
+        # (a realized/bid price on sold lots) — skip those as estimates.
         est = raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {}
-        est_text = _first(raw, "preSaleEstimate", "estimateText", "estimateDisplay",
-                          "formattedEstimate", "estimate")
+        vtype = (_first(raw, "valueType") or "")
+        is_sold = raw.get("sold") is True or (isinstance(vtype, str) and
+                  re.search(r"sold|bid|hammer|real[i]?[sz]ed|price", vtype, re.I))
+        est_text = _first(raw, "value", "preSaleEstimate", "estimateText",
+                          "estimateDisplay", "formattedEstimate", "estimate")
         if not isinstance(est_text, str):
             est_text = ""
-        low, high, est_cur = _parse_estimate_range(est_text)
+        low, high, est_cur = (None, None, None) if is_sold else _parse_estimate_range(est_text)
         if low is None:
-            low = (_first_num(raw, "lowEstimate", "LowEstimate", "estimateLow", "low")
+            low = (_first_num(raw, "lowEstimate", "LowEstimate", "estimateLow")
                    or _first_num(est, "low", "lowEstimate", "min"))
         if high is None:
-            high = (_first_num(raw, "highEstimate", "HighEstimate", "estimateHigh", "high")
+            high = (_first_num(raw, "highEstimate", "HighEstimate", "estimateHigh")
                     or _first_num(est, "high", "highEstimate", "max"))
 
-        currency = (est_cur
+        currency = (est_cur or _parse_estimate_range(est_text)[2]
                     or _first(raw, "currency", "currencyCode", "estimateCurrency", "Currency")
                     or _first(est, "currency", "currencyCode") or "USD")
         if not isinstance(currency, str):
             currency = "USD"
 
-        auction_name = _first(raw, "auctionName", "saleName", "auctionTitle",
-                              "eventName", "auctionStyleName", "sale") \
-            or f"RM Sotheby's {code.upper()}"
-        # Per-lot JSON carries no sale date; it lives on the auction, not the lot.
-        sale_iso = _to_iso(_first(raw, "auctionDate", "saleDate", "date", "startDate",
-                                  "auctionStartDate", "dateTime", "endDate"))
-        location = _first(raw, "location", "lotLocation", "saleLocation",
-                          "city", "geography", "locationFlag")
-        lot_no = _first(raw, "lotNumber", "LotNumber", "lot", "lotNo", "number")
-        lot_no = str(lot_no) if lot_no is not None else None
+        # "header" is the actual sale name ("THE LONDON AUCTION 2026");
+        # "auctionStyleName" is just the generic "RM | SOTHEBY'S" brand label.
+        auction_name = (_first(raw, "header", "auctionName", "saleName",
+                               "auctionTitle", "eventName")
+                        or meta.get("name") or f"RM Sotheby's {code.upper()}")
+        # The lot itself has no date; use the auction-level date resolved per sale.
+        sale_iso = (_to_iso(_first(raw, "auctionDate", "saleDate", "date", "startDate",
+                                   "auctionStartDate", "dateTime", "endDate"))
+                    or meta.get("date"))
+        # Location ships as a flag-image path; decode the country code.
+        location = (_first(raw, "location", "lotLocation", "saleLocation", "city", "geography")
+                    or _country_from_flag(_first(raw, "locationFlag"))
+                    or meta.get("location"))
+        # "lot" is the printed lot number but is sometimes blank; fall back to
+        # the reference id ("r0002") so a lot is never numberless.
+        lot_no = _first(raw, "lot", "lotNumber", "LotNumber", "lotNo", "number", "referenceId")
+        lot_no = str(lot_no).strip() if lot_no is not None else None
+        lot_no = lot_no or None
 
         reserve = "reserve"
         wr = _first(raw, "withoutReserve", "noReserve", "isWithoutReserve")
@@ -1138,8 +1279,8 @@ class RMSothebysAdapter(SourceAdapter):
             currency=currency.upper(),
             reserve_status=reserve,
             image_url=self._extract_image(raw),
-            description_short=_first(raw, "subHeading", "subtitle",
-                                    "shortDescription", "summary"),
+            description_short=_first(raw, "collection", "alt", "subHeading",
+                                    "subtitle", "shortDescription", "summary"),
             category=category_for(year, title),
             status="upcoming",
         )
@@ -1636,29 +1777,61 @@ def selftest() -> None:
     assert rr2["source_url"].endswith("/auctions/mo26/lots/f50/"), rr2
     # non-car / memorabilia with no year -> dropped by is_valid()
     assert rm._to_lot({"publicName": "A Private Collection of Motoring Art"}, "tc26").is_valid() is False
-    # --- the REAL RM JSON shape (keys observed live) ---
-    # preSaleEstimate range string · 'lot' number · 'link' · 'id' · image under
-    # 'header' (a URL) while 'crop' holds crop coords that must be ignored.
+    # --- the REAL RM JSON shape (verbatim from a live dump: the Senna NSX) ---
+    # estimate in 'value' (preSaleEstimate empty) · sale name in 'header' ·
+    # photo in 'crop' (a .webp) · country via 'locationFlag' path · blank 'lot'
+    # falls back to 'referenceId'.
     rm_real = {
-        "id": "9f3a-tc26-107", "lot": "107",
-        "publicName": "2006 Mercedes-Benz CLK DTM AMG Cabriolet",
-        "preSaleEstimate": "€450,000 - €550,000",
-        "auctionStyleName": "The Tegernsee Auction",
-        "locationFlag": "Germany",
-        "header": "https://media.rmsothebys.com/tc26/107/hero.jpg",
-        "crop": "0,0,1600,1067",
-        "link": "/auctions/tc26/lots/r0107-clk-dtm-amg/",
-        "isStillForSale": True, "sold": False,
+        "id": "7efde768-ce89-4588-b50c-46169ddd6153",
+        "publicName": "1991 Honda NSX",
+        "lot": "",
+        "value": "\u00a3500,000 - \u00a3800,000 GBP",
+        "valueType": "",
+        "preSaleEstimate": "",
+        "header": "THE LONDON AUCTION 2026",
+        "auctionStyleName": "RM | SOTHEBY'S",
+        "collection": "Ayrton Senna's personally allocated Honda NSX",
+        "crop": "https://cdn.rmsothebys.com/f/c/c/a/a/3/fccaa35ea.webp",
+        "locationFlag": "/media/General/Flags/241858/gb.png",
+        "link": "/auctions/lf26/lots/r0002-1991-honda-nsx/",
+        "referenceId": "r0002", "sold": False, "isStillForSale": True,
     }
-    rr3 = rm._to_lot(rm_real, "tc26").to_row()
-    assert rr3["year"] == 2006 and rr3["make"] == "Mercedes-Benz", rr3
-    assert rr3["estimate_low"] == 450000.0 and rr3["estimate_high"] == 550000.0, rr3
-    assert rr3["currency"] == "EUR", rr3
-    assert rr3["lot_number"] == "107", rr3
-    assert rr3["external_lot_id"] == "rm:9f3a-tc26-107", rr3
-    assert rr3["auction_event_name"] == "The Tegernsee Auction", rr3
-    assert rr3["image_url"] == "https://media.rmsothebys.com/tc26/107/hero.jpg", rr3  # 'header' not 'crop'
-    assert rr3["source_url"].endswith("/auctions/tc26/lots/r0107-clk-dtm-amg/"), rr3
+    rr3 = rm._to_lot(rm_real, "lf26").to_row()
+    assert rr3["year"] == 1991 and rr3["make"] == "Honda", rr3
+    assert rr3["estimate_low"] == 500000.0 and rr3["estimate_high"] == 800000.0, rr3  # from 'value'
+    assert rr3["currency"] == "GBP", rr3
+    assert rr3["external_lot_id"] == "rm:7efde768-ce89-4588-b50c-46169ddd6153", rr3
+    assert rr3["auction_event_name"] == "THE LONDON AUCTION 2026", rr3               # 'header', not styleName
+    assert rr3["lot_number"] == "r0002", rr3                                          # blank lot -> referenceId
+    assert rr3["location"] == "United Kingdom", rr3                                   # flag path -> country
+    assert rr3["image_url"] == "https://cdn.rmsothebys.com/f/c/c/a/a/3/fccaa35ea.webp", rr3  # 'crop'
+    assert rr3["description_short"].startswith("Ayrton Senna"), rr3
+    assert rr3["source_url"].endswith("/auctions/lf26/lots/r0002-1991-honda-nsx/"), rr3
+    # a SOLD lot's 'value' is a realized price, not an estimate -> not mapped
+    sold_lot = rm._to_lot({"id": "z9", "publicName": "1965 Shelby Cobra",
+                           "value": "$1,200,000 USD", "valueType": "Sold", "sold": True,
+                           "crop": "https://cdn.x/c.webp"}, "mo26").to_row()
+    assert sold_lot.get("estimate_low") is None and sold_lot.get("estimate_high") is None, sold_lot
+    # auction-level date: pulled from the response envelope and stamped on lots
+    env_resp = {"options": {"auction": "TC26", "auctionDate": "2026-07-04T10:00:00",
+                            "location": "Gmund am Tegernsee, Germany"},
+                "items": [], "pager": {"totalItems": 0}}
+    m = rm._meta_from_response(env_resp)
+    assert m.get("date", "").startswith("2026-07-04"), m
+    # multi-day sale -> earliest day wins
+    m2 = rm._meta_from_response({"options": {"days": [{"date": "2026-08-16"},
+                                                      {"date": "2026-08-15"}]}})
+    assert m2.get("date", "").startswith("2026-08-15"), m2
+    # a lot with no date inherits the auction date; flag-less location falls back to meta
+    dated = rm._to_lot({"id": "d1", "publicName": "1991 Honda NSX",
+                        "value": "£500,000 - £800,000 GBP"}, "lf26",
+                       {"date": "2026-09-12T09:00:00", "location": "London, UK"}).to_row()
+    assert dated["auction_end_date"].startswith("2026-09-12"), dated
+    assert dated["location"] == "London, UK", dated
+    # an explicit per-lot date still beats the auction meta
+    own = rm._to_lot({"id": "d2", "publicName": "1991 Honda NSX", "date": "2026-10-01"},
+                     "lf26", {"date": "2026-09-12"}).to_row()
+    assert own["auction_end_date"].startswith("2026-10-01"), own
     # auction-code discovery: env override wins and is normalized
     os.environ["RADAR_RM_AUCTIONS"] = "TC26, mo26 ,Wp26"
     try:

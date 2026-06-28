@@ -155,6 +155,15 @@
   .price .usd{font-size:10px;color:var(--muted);margin-top:3px}
   .cd{font-size:11px;letter-spacing:.04em;color:var(--ink-2);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600}
   .cd.urgent{color:var(--claret)}
+  .cd.final{animation:cd-pulse 1s ease-in-out infinite}
+  .cd.ended,.cd.ended .k{color:var(--brass)}
+  .price-card.final{animation:cd-pulse 1s ease-in-out infinite}
+  .price-card.ended{border-left-color:var(--brass)}
+  .price-card.ended .k,.price-card.ended .v{color:var(--brass)}
+  @keyframes cd-pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .just-ended{position:relative;overflow:hidden}
+  .just-ended::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 20%,rgba(156,124,60,.55) 50%,transparent 80%);transform:translateX(-120%);animation:gold-sweep 1.2s ease-out 1;pointer-events:none}
+  @keyframes gold-sweep{to{transform:translateX(120%)}}
   .cd .k{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;font-weight:600}
   .src{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 
@@ -703,8 +712,10 @@ function cardHTML(l){
   if(l.reserve==="no-reserve") badges.push(`<span class="badge nr">No reserve</span>`);
   badges.push(`<span class="badge fmt">${fmtTag}</span>`);
 
+  const _ended = within<=0;
+  const _cdCls = _ended ? "cd ended" : `cd ${within<6*HOUR?"urgent":""} ${within<60000?"final":""}`;
   const foot = l.format==="online"
-    ? `<div class="cd ${within<6*HOUR?'urgent':''}" data-cd="${l.id}"><div class="k">Ends in</div>${cd(within)}</div>`
+    ? `<div class="${_cdCls}" data-cd="${l.id}"><div class="k">${_ended?"Result":"Ends in"}</div>${_ended?"Hammer down":cd(within)}</div>`
     : `<div class="cd" style="color:var(--ink-2)"><div class="k">Auction</div>${fmtDate(l.closes)}</div>`;
 
   return `
@@ -821,8 +832,9 @@ function openDetail(id){
     ["Category", l.cat],["Reserve", l.reserve==="no-reserve" ? "No reserve" : "Reserve"]
   ];
 
+  const _dEnded = within<=0;
   const timeBlock = l.format==="online"
-    ? `<div class="price-card amber"><div class="k">Ends in</div><div class="v" data-cd-detail="${l.id}">${cd(within)}</div><div class="sub">${esc(l.house)} online block</div></div>`
+    ? `<div class="price-card amber ${_dEnded?"ended":(within<60000?"final":"")}"><div class="k">${_dEnded?"Result":"Ends in"}</div><div class="v" data-cd-detail="${l.id}">${_dEnded?"Hammer down":cd(within)}</div><div class="sub">${esc(l.house)} online block</div></div>`
     : `<div class="price-card"><div class="k">Auction date</div><div class="v" style="font-size:17px">${fmtDate(l.closes)}</div><div class="sub">${esc(l.event)} · ${esc(l.location)}</div></div>`;
 
   const similar = LOTS.filter(x=>x.make===l.make && x.id!==l.id).slice(0,3);
@@ -972,16 +984,53 @@ function bindControls(){
   });
 }
 
+const endedFlashed = new Set();
+
+function flashEnd(el, id){
+  if(endedFlashed.has(id)) return;          // one gold sweep per lot, per session
+  endedFlashed.add(id);
+  el.classList.add("just-ended");
+  setTimeout(()=>{ try{ el.classList.remove("just-ended"); }catch(e){} }, 1500);
+}
+
 function tick(){
   const now = Date.now();
   document.querySelectorAll("[data-cd]").forEach(el=>{
     const l = LOTS.find(x=>x.id===+el.dataset.cd); if(!l) return;
     const within = l.closes-now;
-    el.childNodes[el.childNodes.length-1].textContent = cd(within);
-    el.classList.toggle("urgent", within>0 && within<6*HOUR);
+    const k = el.querySelector(".k");
+    const txt = el.childNodes[el.childNodes.length-1];
+    if(within<=0){
+      if(!el.classList.contains("ended")){    // just crossed the line on screen
+        el.classList.remove("urgent","final");
+        el.classList.add("ended");
+        if(k) k.textContent = "Result";
+        flashEnd(el, l.id);
+      }
+      if(txt) txt.textContent = "Hammer down";
+    } else {
+      el.classList.remove("ended");
+      el.classList.toggle("urgent", within<6*HOUR);
+      el.classList.toggle("final", within<60000);
+      if(k) k.textContent = "Ends in";
+      if(txt) txt.textContent = cd(within);
+    }
   });
   const dt = document.querySelector("[data-cd-detail]");
-  if(dt){ const l=LOTS.find(x=>x.id===+dt.dataset.cdDetail); if(l) dt.textContent=cd(l.closes-now); }
+  if(dt){
+    const l = LOTS.find(x=>x.id===+dt.dataset.cdDetail);
+    if(l){
+      const within = l.closes-now, card = dt.closest(".price-card"), k = card ? card.querySelector(".k") : null;
+      if(within<=0){
+        if(card && !card.classList.contains("ended")){ card.classList.add("ended"); card.classList.remove("final"); if(k) k.textContent="Result"; flashEnd(card, l.id); }
+        dt.textContent = "Hammer down";
+      } else {
+        if(card){ card.classList.remove("ended"); card.classList.toggle("final", within<60000); }
+        if(k) k.textContent = "Ends in";
+        dt.textContent = cd(within);
+      }
+    }
+  }
   updateGauges();
 }
 function clock(){
@@ -994,8 +1043,8 @@ function clock(){
    your `auction_lots` table. Leave them blank to run on the
    bundled demo data. CORS is enabled on Supabase by default.
    ============================================================ */
-const SUPABASE_URL      = "https://ynukbvtluymsxllewlsa.supabase.co";   // e.g. https://YOURPROJECT.supabase.co
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InludWtidnRsdXltc3hsbGV3bHNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1OTU5ODksImV4cCI6MjA5ODE3MTk4OX0.RfjtuT2PCKsH2QHnGyLoIZyvXD-n3DYlZ_MQU6AJ4Hw";   // anon / publishable key — safe to ship in client code.
+const SUPABASE_URL      = "";   // e.g. https://YOURPROJECT.supabase.co
+const SUPABASE_ANON_KEY = "";   // anon / publishable key — safe to ship in client code.
                                 // NEVER place the service_role key here; the scraper pipeline uses that server-side.
 const HAS_SB = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 

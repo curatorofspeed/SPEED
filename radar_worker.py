@@ -333,6 +333,16 @@ def _parse_estimate_range(s) -> tuple[Optional[float], Optional[float], Optional
     return low, high, cur
 
 
+def _parse_money(s) -> tuple[Optional[float], Optional[str]]:
+    """Single realized/hammer figure + currency from a sold lot's value string
+    (e.g. '£1,200,000 GBP', 'Sold for $2,500,000', 'Bid to €410,000'): the
+    largest number present is taken as the price. Reuses the estimate parser's
+    currency + number detection so symbol handling stays in one place."""
+    low, high, cur = _parse_estimate_range(s)
+    nums = [v for v in (low, high) if v is not None]
+    return (max(nums) if nums else None), cur
+
+
 _FLAG_CC_RE = re.compile(r"/([A-Za-z]{2})\.png", re.I)
 _COUNTRY_BY_CC = {
     "us": "USA", "gb": "United Kingdom", "de": "Germany", "it": "Italy",
@@ -1224,13 +1234,20 @@ class RMSothebysAdapter(SourceAdapter):
                           "estimateDisplay", "formattedEstimate", "estimate")
         if not isinstance(est_text, str):
             est_text = ""
-        low, high, est_cur = (None, None, None) if is_sold else _parse_estimate_range(est_text)
-        if low is None:
-            low = (_first_num(raw, "lowEstimate", "LowEstimate", "estimateLow")
-                   or _first_num(est, "low", "lowEstimate", "min"))
-        if high is None:
-            high = (_first_num(raw, "highEstimate", "HighEstimate", "estimateHigh")
-                    or _first_num(est, "high", "highEstimate", "max"))
+        sold_price = None
+        if is_sold:
+            # Sold/withdrawn lot: the "value" string is the realized (or final
+            # bid) figure, not an estimate. Capture it as the result.
+            low = high = None
+            sold_price, est_cur = _parse_money(est_text)
+        else:
+            low, high, est_cur = _parse_estimate_range(est_text)
+            if low is None:
+                low = (_first_num(raw, "lowEstimate", "LowEstimate", "estimateLow")
+                       or _first_num(est, "low", "lowEstimate", "min"))
+            if high is None:
+                high = (_first_num(raw, "highEstimate", "HighEstimate", "estimateHigh")
+                        or _first_num(est, "high", "highEstimate", "max"))
 
         currency = (est_cur or _parse_estimate_range(est_text)[2]
                     or _first(raw, "currency", "currencyCode", "estimateCurrency", "Currency")
@@ -1276,13 +1293,14 @@ class RMSothebysAdapter(SourceAdapter):
             year=year, make=make, model=model, trim=trim,
             location=location,
             estimate_low=low, estimate_high=high,
+            current_bid=sold_price,
             currency=currency.upper(),
             reserve_status=reserve,
             image_url=self._extract_image(raw),
             description_short=_first(raw, "collection", "alt", "subHeading",
                                     "subtitle", "shortDescription", "summary"),
             category=category_for(year, title),
-            status="upcoming",
+            status=("sold" if is_sold else "upcoming"),
         )
 
 
@@ -1448,6 +1466,26 @@ def run_alerts(soon_hours: int, new_within: int, dry_run: bool, bootstrap: bool)
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
+def sold_sales_rows(lots: list[Lot]) -> list[dict]:
+    """sales_history comp records derived from lots that came back already sold
+    at ingest. Live houses (RM) report the realized price in the same feed, so
+    the result is captured directly; current_bid holds the hammer figure and
+    auction_end_date the sale date. on_conflict(source,external_id) makes the
+    insert idempotent across repeated ingests."""
+    out = []
+    for l in lots:
+        if l.is_valid() and l.status == "sold" and l.current_bid:
+            out.append({
+                "source": l.source_name, "source_url": l.source_url,
+                "external_id": l.external_lot_id,
+                "year": l.year, "make": l.make, "model": l.model, "trim": l.trim,
+                "mileage": l.mileage,
+                "sold_price": l.current_bid, "currency": l.currency,
+                "sold_date": (l.auction_end_date or "")[:10] or None,
+            })
+    return out
+
+
 def run(source_key: str, dry_run: bool, limit: Optional[int], no_robots: bool) -> None:
     adapter = ADAPTERS[source_key]()
     fetcher = Fetcher(respect_robots=not no_robots)
@@ -1468,6 +1506,15 @@ def run(source_key: str, dry_run: bool, limit: Optional[int], no_robots: bool) -
     sb.ensure_source(adapter.config)
     n = sb.upsert_lots(rows)
     log.info("Upserted %d row(s) into auction_lots", n)
+
+    # Live houses (e.g. RM) report realized prices in the same catalog feed, so
+    # any lot that came back already sold becomes a comp at ingest time. Online
+    # houses (BaT) are handled post-close by --harvest-results instead.
+    sales = sold_sales_rows(lots)
+    if sales:
+        sb.insert_sales(sales)
+        log.info("Recorded %d sold lot(s) into sales_history (ingest comps)", len(sales))
+
     sb.reconcile_stale(adapter.config.name, STALE_DAYS)
     log.info("Reconciled stale lots ( > %.1f days unseen -> withdrawn )", STALE_DAYS)
 
@@ -1723,6 +1770,10 @@ def selftest() -> None:
     assert _parse_estimate_range("$1,000,000 - $1,500,000") == (1000000.0, 1500000.0, "USD")
     assert _parse_estimate_range("£90,000 - £120,000")[2] == "GBP"
     assert _parse_estimate_range("Estimate available upon request") == (None, None, None)
+    assert _parse_money("£1,200,000 GBP") == (1200000.0, "GBP")
+    assert _parse_money("Sold for $2,500,000") == (2500000.0, "USD")
+    assert _parse_money("Bid to €410,000") == (410000.0, "EUR")
+    assert _parse_money("") == (None, None)
     print("    ok")
 
     print("· RM Sotheby's adapter (JSON API, third source)")
@@ -1807,11 +1858,26 @@ def selftest() -> None:
     assert rr3["image_url"] == "https://cdn.rmsothebys.com/f/c/c/a/a/3/fccaa35ea.webp", rr3  # 'crop'
     assert rr3["description_short"].startswith("Ayrton Senna"), rr3
     assert rr3["source_url"].endswith("/auctions/lf26/lots/r0002-1991-honda-nsx/"), rr3
-    # a SOLD lot's 'value' is a realized price, not an estimate -> not mapped
-    sold_lot = rm._to_lot({"id": "z9", "publicName": "1965 Shelby Cobra",
+    # a SOLD lot's 'value' is a realized price: captured as current_bid +
+    # status='sold' (so it drops off the active board), suppressed as estimate.
+    sold_obj = rm._to_lot({"id": "z9", "publicName": "1965 Shelby Cobra",
                            "value": "$1,200,000 USD", "valueType": "Sold", "sold": True,
-                           "crop": "https://cdn.x/c.webp"}, "mo26").to_row()
+                           "crop": "https://cdn.x/c.webp"}, "mo26",
+                          {"date": "2026-08-15T10:00:00"})
+    sold_lot = sold_obj.to_row()
     assert sold_lot.get("estimate_low") is None and sold_lot.get("estimate_high") is None, sold_lot
+    assert sold_lot.get("current_bid") == 1200000.0, sold_lot
+    assert sold_lot.get("currency") == "USD", sold_lot
+    assert sold_lot.get("status") == "sold", sold_lot
+    # …and that sold lot becomes a sales_history comp at ingest
+    comps = sold_sales_rows([sold_obj])
+    assert len(comps) == 1, comps
+    assert comps[0]["sold_price"] == 1200000.0 and comps[0]["currency"] == "USD", comps
+    assert comps[0]["make"] == "Shelby" and comps[0]["sold_date"] == "2026-08-15", comps
+    assert comps[0]["external_id"] == "rm:z9", comps
+    # an unsold (estimate) lot is NOT a comp
+    assert sold_sales_rows([rm._to_lot({"id": "e1", "publicName": "1991 Honda NSX",
+                            "value": "£500,000 - £800,000 GBP"}, "lf26")]) == []
     # auction-level date: pulled from the response envelope and stamped on lots
     env_resp = {"options": {"auction": "TC26", "auctionDate": "2026-07-04T10:00:00",
                             "location": "Gmund am Tegernsee, Germany"},

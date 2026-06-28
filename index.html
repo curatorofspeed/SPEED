@@ -341,7 +341,19 @@
     .spec:nth-child(odd){border-right:none}
     .spec:not(:last-child){border-bottom:1px solid var(--rule)}
     .scrim{padding:0}
-    .sheet{margin:0;border-radius:0;max-height:100vh;min-height:100vh}
+    .sheet{margin:0;border-radius:0;max-height:100vh;min-height:100vh;max-height:100dvh;min-height:100dvh}
+    /* the filter bar stacks to ~6 tall fields on phones — pinning it would eat
+       the screen, so let it scroll away; only the command bar stays sticky */
+    .controls{position:static}
+    /* keep the command bar on one row on narrow phones */
+    .brand b{font-size:15px;letter-spacing:.09em}
+    .wl-txt{display:none}
+    .watch-btn{padding:9px 11px}
+    .auth-btn{max-width:32vw;padding:9px 11px}
+    /* roomier tap targets */
+    .sheet-x{width:40px;height:40px}
+    .lot .star{width:38px;height:38px}
+    .chip{padding:9px 15px}
   }
 
   @media(prefers-reduced-motion:reduce){
@@ -437,7 +449,7 @@
     </div>
     <button class="auth-btn" id="authBtn" hidden>Sign in</button>
     <button class="watch-btn" id="watchBar" aria-label="View watchlist">
-      <span class="star">★</span> Watchlist <span class="n" id="watchN">0</span>
+      <span class="star">★</span> <span class="wl-txt">Watchlist</span> <span class="n" id="watchN">0</span>
     </button>
   </div>
 </header>

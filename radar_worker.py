@@ -1581,12 +1581,292 @@ class TheMarketAdapter(SourceAdapter):
         return {"sold": False}
 
 
+# ---------------------------------------------------------------------------
+# Bonhams Cars (cars.bonhams.com) — server-rendered Next.js live auction house
+# ---------------------------------------------------------------------------
+# The /cars/ department page ships a __NEXT_DATA__ JSON blob with the full,
+# UNGATED feed (unlike The Market's cookie-gated /api/listings):
+#   props.pageProps.lots.hits          -> upcoming/preview lots (estimates + sale date)
+#   props.pageProps.department.exceptionalResults -> past record sales we keep as comps
+# One GET per page, no API key, no cf_clearance gate. Currency note: the site
+# *displays* prices in the visitor's currency, but every lot's underlying
+# currency.iso_code + price.estimateLow/High are NATIVE (GBP/EUR/USD per lot),
+# so comps never get muddled — the USD pixel payload was only the display layer.
+NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.S | re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+_BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.I)
+_YEAR_RE = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+# space-separated marques (hyphenated ones like Mercedes-Benz are single tokens)
+_TWO_WORD_MARQUES = {
+    "aston martin", "alfa romeo", "rolls royce", "land rover", "de tomaso",
+    "iso rivolta", "facel vega", "la salle", "general motors",
+}
+# tokens that terminate the model string in a Bonhams lot title
+_MODEL_STOP_RE = re.compile(
+    r"\s*(?:chassis\s*no\.?|chassis\s*number|engine\s*no\.?|body\s*no\.?|vin\.?)\b", re.I)
+_COMP_CUR = {"US$": "USD", "$": "USD", "£": "GBP", "€": "EUR", "CHF": "CHF",
+             "AU$": "AUD", "CA$": "CAD"}
+_BONHAMS_SENTINEL_TS = 4_000_000_000   # biddableFrom 'year 2100' = no scheduled sale
+
+
+def _strip_tags(s: str) -> str:
+    return html.unescape(_TAG_RE.sub(" ", s or "")).replace("\xa0", " ")
+
+
+def _parse_ymm(name: str) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    """(year, make, model) from a Bonhams lot name. Names may be multi-line
+    (provenance prefix + '<BR>' + the YEAR MAKE MODEL line + '<BR>' coachwork/
+    chassis lines). Split on <BR>, strip tags, and parse from the first segment
+    bearing a leading 4-digit year; the upcoming-lots `title` field is a single
+    clean line so it parses directly."""
+    parts = [re.sub(r"\s{2,}", " ", _strip_tags(p).strip())
+             for p in _BR_RE.split(name or "")]
+    parts = [p for p in parts if p]
+    line = next((p for p in parts if _YEAR_RE.search(p)), " ".join(parts))
+    m = _YEAR_RE.search(line)
+    if not m:
+        return None, None, None
+    year = int(m.group(1))
+    after = line[m.end():].strip(" ,")
+    stop = _MODEL_STOP_RE.search(after)
+    body = (after[:stop.start()] if stop else after).strip(" ,")
+    words = body.split()
+    if not words:
+        return year, None, None
+    if len(words) >= 2 and " ".join(words[:2]).lower() in _TWO_WORD_MARQUES:
+        make, model = " ".join(words[:2]), " ".join(words[2:])
+    else:
+        make, model = words[0], " ".join(words[1:])
+    return year, (make or None), (model.strip(" ,") or None)
+
+
+def _parse_chassis(name: str) -> Optional[str]:
+    txt = _strip_tags(name or "")
+    m = (re.search(r"chassis\s*no\.?\s*([A-Za-z0-9][\w ./\-]{1,40})", txt, re.I)
+         or re.search(r"\bVIN\.?\s*([A-Za-z0-9][\w ./\-]{1,40})", txt, re.I))
+    if not m:
+        return None
+    val = re.split(r"\s+(?:engine|body)\s*no\.?", m.group(1).strip(), flags=re.I)[0]
+    return val.strip() or None
+
+
+def _bonhams_img(img: dict) -> Optional[str]:
+    """Hotlinkable CDN image URL from {url, URLParams}; url already carries
+    '?src=…', so append the crop params + a sane width."""
+    if not isinstance(img, dict) or not img.get("url"):
+        return None
+    url = img["url"]
+    params = (img.get("URLParams") or "").strip()
+    out = url + (("&" + params) if params else "")
+    return out + ("&width=640" if "width=" not in out else "")
+
+
+def _bonhams_date_from_img(url: str) -> Optional[str]:
+    """Approximate sale date for an exceptionalResults comp from its image path
+    '…/Images/live/YYYY-MM/DD/…' (uploaded around sale time). Used only as the
+    comp's sold_date — the highlights payload ships no date field."""
+    m = re.search(r"/live/(\d{4})-(\d{2})/(\d{2})/", url or "")
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}T00:00:00+00:00" if m else None
+
+
+class BonhamsCarsAdapter(SourceAdapter):
+    SITE = "https://cars.bonhams.com"
+    GRID = "/cars/"
+    MAX_PAGES = int(os.getenv("RADAR_BONHAMS_MAX_PAGES", "10"))
+    config = SourceConfig(
+        name="Bonhams Cars",
+        base_url=SITE,
+        auction_type="live",
+        scrape_method="ssr-next",
+        terms_notes="cars.bonhams.com /cars/ __NEXT_DATA__ (Next.js getServerSideProps); "
+                    "public, server-rendered, no auth.",
+    )
+
+    def __init__(self):
+        self._upcoming_by_id: Optional[dict] = None     # hot-refresh cache
+
+    # ---- fetch + extract the embedded Next.js page data --------------------
+    def _next_data(self, fetcher: Fetcher, page: int) -> Optional[dict]:
+        url = self.SITE + self.GRID + (f"?page={page}" if page > 1 else "")
+        resp = fetcher.get(url)
+        if not resp:
+            return None
+        m = NEXT_DATA_RE.search(resp.text)
+        if not m:
+            log.warning("Bonhams: no __NEXT_DATA__ on %s", url)
+            return None
+        try:
+            return json.loads(m.group(1))
+        except Exception as e:
+            log.warning("Bonhams: __NEXT_DATA__ JSON parse failed (%s)", e)
+            return None
+
+    @staticmethod
+    def _lots_block(data: Optional[dict]) -> dict:
+        return (((data or {}).get("props") or {}).get("pageProps") or {}).get("lots") or {}
+
+    # ---- upcoming / preview lot -> Lot ------------------------------------
+    def _to_lot(self, hit: dict) -> Optional[Lot]:
+        ext = _first(hit, "id", "lotUniqueId")
+        if not ext:
+            return None
+        title = hit.get("title") or hit.get("styledDescription") or ""
+        year, make, model = _parse_ymm(title)
+        price = hit.get("price") or {}
+        lo = to_float(price.get("estimateLow")) or None
+        hi = to_float(price.get("estimateHigh")) or None
+        # scheduled sale window: trust the Unix timestamps (unambiguous UTC) — the
+        # feed's paired 'datetime' strings mislabel local time as +00:00. A year-
+        # 2100 sentinel = private sale / no scheduled date, so drop those dates.
+        start_ts = ((hit.get("biddableFrom") or {}).get("timestamp")
+                    or (hit.get("hammerTime") or {}).get("timestamp"))
+        end_ts = (hit.get("auctionEndDate") or {}).get("timestamp")
+        sentinel = bool(start_ts and start_ts >= _BONHAMS_SENTINEL_TS)
+        cur = (((hit.get("currency") or {}).get("iso_code")) or "USD").upper()
+        flags = hit.get("flags") or {}
+        auction_id = str(hit.get("auctionId") or "").strip()
+        slug = hit.get("slug") or _slugify(title)
+        lotno = ((hit.get("lotNo") or {}).get("full") or "").strip()
+        return Lot(
+            source_name=self.config.name,
+            external_lot_id=f"bonhams:{ext}",
+            auction_type="live",
+            source_url=(f"{self.SITE}/auction/{auction_id}/preview-lot/{ext}/{slug}/"
+                        if auction_id else None),
+            auction_event_name=("Private Sales" if hit.get("auctionType") == "PRIAUC"
+                                else None),
+            auction_start_date=(None if sentinel else _to_iso(start_ts)),
+            auction_end_date=(None if (sentinel or not end_ts) else _to_iso(end_ts)),
+            lot_number=(lotno if lotno and lotno != "0" else None),
+            year=year, make=make, model=model,
+            chassis=_parse_chassis(title),
+            location=((hit.get("country") or {}).get("name")),
+            estimate_low=(lo if (lo and lo > 0) else None),
+            estimate_high=(hi if (hi and hi > 0) else None),
+            current_bid=None,
+            currency=_CUR.get(cur, cur),
+            reserve_status=("no-reserve" if flags.get("isWithoutReserve") else "reserve"),
+            image_url=_bonhams_img(hit.get("image") or {}),
+            description_short=(_strip_tags(hit.get("styledDescription") or "").strip()
+                               or (hit.get("image") or {}).get("caption") or None),
+            category=category_for(year, title),
+            status="upcoming",
+        )
+
+    # ---- exceptionalResults -> sold comp Lot ------------------------------
+    def _to_comp(self, ex: dict) -> Optional[Lot]:
+        price = to_float(ex.get("hammerPremium")) or to_float(ex.get("hammerPrice"))
+        if not price or price <= 0:                 # highlight reel includes 0s
+            return None
+        uniq = _first(ex, "saleLotNoUnique", "saleNo")
+        name = ex.get("lotName") or ""
+        year, make, model = _parse_ymm(name)
+        if not (uniq and year and make):
+            return None
+        sale_no, lot_no = str(ex.get("saleNo") or "").strip(), str(ex.get("lotNo") or "").strip()
+        return Lot(
+            source_name=self.config.name,
+            external_lot_id=f"bonhams:{uniq}",
+            auction_type="live",
+            source_url=(f"{self.SITE}/auction/{sale_no}/lot/{lot_no}/"
+                        if sale_no and lot_no else None),
+            year=year, make=make, model=model,
+            chassis=_parse_chassis(name),
+            current_bid=price,
+            currency=_COMP_CUR.get((ex.get("currencySymbol") or "").strip(), "USD"),
+            image_url=_bonhams_img({"url": ex.get("imageURL"),
+                                    "URLParams": ex.get("imageURLParams")}),
+            description_short=(_strip_tags(name).strip()[:300] or None),
+            category=category_for(year, name),
+            auction_end_date=_bonhams_date_from_img(ex.get("imageURL") or ""),
+            status="sold",
+        )
+
+    # ---- collect: upcoming lots (+ record-sale comps) ---------------------
+    def collect(self, fetcher: Fetcher, limit: Optional[int] = None) -> list[Lot]:
+        lots: list[Lot] = []
+        data = self._next_data(fetcher, 1)
+        if not data:
+            return lots
+        block = self._lots_block(data)
+        hits = block.get("hits") or []
+        log.info("Bonhams: page 1 — %d upcoming lot(s) (found=%s)",
+                 len(hits), block.get("found"))
+        if hits and os.getenv("RADAR_DUMP_RAW"):
+            print(json.dumps(hits[0], indent=2, default=str))
+
+        def _take(hs) -> bool:
+            for h in hs:
+                lot = self._to_lot(h)
+                if lot:
+                    lots.append(lot)
+                    if limit and len(lots) >= limit:
+                        return True
+            return False
+
+        if not _take(hits):
+            pages = int(to_float(block.get("nbPages")) or 1)
+            page = 2
+            while page <= min(pages, self.MAX_PAGES):
+                hs = self._lots_block(self._next_data(fetcher, page)).get("hits") or []
+                if not hs:
+                    break
+                log.info("Bonhams: page %d — %d lot(s)", page, len(hs))
+                if _take(hs):
+                    break
+                page += 1
+
+        # record-sale comps from the same page-1 payload. run() routes any
+        # status='sold' lot into sales_history (the same path The Market uses).
+        try:
+            dept = (((data.get("props") or {}).get("pageProps") or {}).get("department") or {})
+            n = 0
+            for ex in (dept.get("exceptionalResults") or []):
+                comp = self._to_comp(ex)
+                if comp:
+                    lots.append(comp)
+                    n += 1
+            if n:
+                log.info("Bonhams: %d record-sale comp(s) captured", n)
+        except Exception as e:
+            log.warning("Bonhams: comps pull skipped (%s)", e)
+        return lots
+
+    # ---- hot-refresh hook (effectively unused: live lots never go 'hot') ---
+    def parse(self, url: str, fetcher: Fetcher) -> Optional[Lot]:
+        """refresh_hot only targets online lots closing soon; Bonhams lots are
+        'live', so this is unused in practice. Kept correct: index the upcoming
+        feed once per call and resolve by the id embedded in the lot URL."""
+        if self._upcoming_by_id is None:
+            cache: dict = {}
+            for h in (self._lots_block(self._next_data(fetcher, 1)).get("hits") or []):
+                lot = self._to_lot(h)
+                if lot:
+                    cache[lot.external_lot_id] = lot
+            self._upcoming_by_id = cache
+        m = re.search(r"/(?:preview-lot|lot)/(\d+)/", url)
+        return self._upcoming_by_id.get(f"bonhams:{m.group(1)}") if m else None
+
+    # ---- harvest hook (unused: live lots aren't post-close harvested) ------
+    def parse_result(self, url: str, text: str) -> dict:
+        m = re.search(r"sold\s+for[^0-9£€$]*([£€$])?\s*([\d][\d,]*)", text[:60000], re.I)
+        if m and to_float(m.group(2)):
+            return {"sold": True, "sold_price": to_float(m.group(2)),
+                    "currency": {"£": "GBP", "€": "EUR", "$": "USD"}.get(m.group(1) or "", "GBP"),
+                    "sold_date": None}
+        return {"sold": False}
+
+
 # register adapters here as you add them (Collecting Cars, PCARMARKET, …)
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "bringatrailer": BringATrailerAdapter,
     "carsandbids": CarsAndBidsAdapter,
     "rmsothebys": RMSothebysAdapter,
-    "themarket": TheMarketAdapter,
+    "bonhamscars": BonhamsCarsAdapter,
+    # "themarket": TheMarketAdapter,   # PARKED: /api/listings is app-gated (403 w/o
+    #   a browser cf_clearance cookie) — unreachable from an unattended worker.
+    #   Adapter + self-tests retained above; re-enable if Bonhams ungates the route.
 }
 # resolve a stored source_name (e.g. "Bring a Trailer") back to its adapter
 ADAPTERS_BY_NAME = {cls.config.name: cls for cls in ADAPTERS.values()}
@@ -2287,6 +2567,177 @@ def selftest() -> None:
     refreshed = tm2.parse("https://www.themarket.co.uk/listings/rolls-royce/2025-doctors-coup/"
                           "e7946edd-61a1-41f3-b7b6-b350ca4f5049", f2)
     assert refreshed and refreshed.external_lot_id == "tm:e7946edd-61a1-41f3-b7b6-b350ca4f5049", refreshed
+    print("    ok")
+
+    print("· Bonhams Cars adapter (__NEXT_DATA__ SSR, fourth source)")
+    assert ADAPTERS_BY_NAME.get("Bonhams Cars") is BonhamsCarsAdapter
+    assert BonhamsCarsAdapter.collect is not SourceAdapter.collect   # SSR source overrides collect()
+    bh = BonhamsCarsAdapter()
+    # helpers: YEAR/MAKE/MODEL from single-line titles AND multi-line comp names
+    assert _parse_ymm("1936 Aston Martin 2-litre Speed competition two-seater Chassis no. L6/713/U") \
+        == (1936, "Aston Martin", "2-litre Speed competition two-seater")     # two-word marque
+    assert _parse_ymm("1953 Mercedes-Benz 300 S Roadster Chassis no. 188012 00071/53") \
+        == (1953, "Mercedes-Benz", "300 S Roadster")                          # hyphenated = one token
+    assert _parse_ymm("<I>prov</I><BR /><B>1929 Bentley 4½ Liter Tourer<BR />Coachwork by X</B>"
+                      "<BR />Chassis no. FB 3320")[:2] == (1929, "Bentley")   # year line, not prov prefix
+    assert _parse_chassis("X Chassis no. L6/713/U Engine no. L6/713/U") == "L6/713/U"
+    assert _bonhams_img({"url": "https://img/x.jpg?src=a", "URLParams": "left=0.1&right=0.9"}) \
+        == "https://img/x.jpg?src=a&left=0.1&right=0.9&width=640"
+    assert _bonhams_date_from_img(
+        "https://images2.bonhams.com/image?src=Images/live/2022-05/15/2.jpg") == "2022-05-15T00:00:00+00:00"
+
+    # real upcoming-lot fixtures (values verbatim from the /cars/ __NEXT_DATA__ blob)
+    hit_aston = {
+        "id": "6172587", "lotUniqueId": "6172587", "auctionId": "31857", "auctionType": "PUBLIC",
+        "slug": "1936-aston-martin-2-litre-speed-competition-two-seater-chassis-no-l6713u-engine-no-l6713u",
+        "title": "1936 Aston Martin 2-litre Speed competition two-seater "
+                 "Chassis no. L6/713/U Engine no. L6/713/U",
+        "styledDescription": "<I>The Ex T.A.S.O Mathieson</I> 1936 Aston Martin 2-litre Speed "
+                             "competition two-seater",
+        "country": {"name": "United Kingdom"}, "currency": {"iso_code": "GBP"},
+        "price": {"estimateLow": 500000, "estimateHigh": 600000, "hammerPremium": 0, "hammerPrice": 0},
+        "biddableFrom": {"timestamp": 1789810200}, "auctionEndDate": {"timestamp": 1789858799},
+        "flags": {"isWithoutReserve": False, "isPreview": True}, "lotNo": {"full": "0"},
+        "image": {"url": "https://images1.bonhams.com/image?src=Images/live/2026-06/25/25873217-1-25.jpg",
+                  "URLParams": "left=0.056666666666&right=0.946666666666"},
+    }
+    ra = bh._to_lot(hit_aston).to_row()
+    for k in ("year", "make", "model", "currency", "estimate_low", "reserve_status", "auction_start_date"):
+        print(f"    {k:18} = {ra.get(k)}")
+    assert ra["year"] == 1936 and ra["make"] == "Aston Martin", ra
+    assert ra["model"] == "2-litre Speed competition two-seater", ra
+    assert ra["external_lot_id"] == "bonhams:6172587", ra
+    assert ra["auction_type"] == "live" and ra["status"] == "upcoming", ra
+    assert ra["currency"] == "GBP", ra
+    assert ra["estimate_low"] == 500000.0 and ra["estimate_high"] == 600000.0, ra
+    assert ra["reserve_status"] == "reserve", ra
+    assert ra.get("lot_number") is None, ra                       # preview lots ship lotNo "0"
+    assert ra["chassis"] == "L6/713/U", ra
+    assert ra["location"] == "United Kingdom", ra
+    assert ra.get("auction_event_name") is None, ra               # public sale name absent in /cars/ feed
+    assert ra["auction_start_date"].startswith("2026-09-19"), ra  # trust epoch, not mislabeled datetime
+    assert ra["auction_end_date"].startswith("2026-09-19"), ra
+    assert ra["source_url"] == (
+        "https://cars.bonhams.com/auction/31857/preview-lot/6172587/"
+        "1936-aston-martin-2-litre-speed-competition-two-seater-chassis-no-l6713u-engine-no-l6713u/"), ra
+    assert ra["image_url"].startswith("https://images1.bonhams.com/") \
+        and ra["image_url"].endswith("&width=640"), ra
+
+    # native per-lot currency: Belgian lot is EUR w/ EUR estimates, NOT the GBP-normalized fields
+    hit_merc = {
+        "id": "6156079", "auctionId": "32045", "auctionType": "PUBLIC",
+        "slug": "1953-mercedes-benz-300-s-roadster",
+        "title": "1953 Mercedes-Benz 300 S Roadster Chassis no. 188012 00071/53 Engine no. 188920 00073/53",
+        "styledDescription": "", "country": {"name": "Belgium"}, "currency": {"iso_code": "EUR"},
+        "price": {"estimateLow": 350000, "estimateHigh": 400000,
+                  "GBPLowEstimate": 302813.48, "GBPHighEstimate": 346072.55},
+        "biddableFrom": {"timestamp": 1791712800}, "auctionEndDate": {"timestamp": 1791755999},
+        "flags": {"isWithoutReserve": False}, "lotNo": {"full": "0"},
+        "image": {"url": "https://images1.bonhams.com/image?src=Images/live/2026-05/21/25863022-1-2.jpg"},
+    }
+    rmb = bh._to_lot(hit_merc).to_row()
+    assert rmb["make"] == "Mercedes-Benz" and rmb["model"] == "300 S Roadster", rmb
+    assert rmb["currency"] == "EUR", rmb
+    assert rmb["estimate_low"] == 350000.0 and rmb["estimate_high"] == 400000.0, rmb   # native, not £302,813
+    assert rmb["location"] == "Belgium" and rmb["external_lot_id"] == "bonhams:6156079", rmb
+
+    # no-reserve flag mapping
+    hit_bug = {
+        "id": "6170829", "auctionId": "31857", "auctionType": "PUBLIC",
+        "slug": "1929-bugatti-type-35c-grand-prix-two-seater-chassis-no-4930",
+        "title": "1929 Bugatti Type 35C Grand Prix Two-Seater Chassis no. 4930",
+        "styledDescription": "", "country": {"name": "United Kingdom"}, "currency": {"iso_code": "GBP"},
+        "price": {"estimateLow": 500000, "estimateHigh": 700000},
+        "biddableFrom": {"timestamp": 1789810200}, "auctionEndDate": {"timestamp": 1789858799},
+        "flags": {"isWithoutReserve": True}, "lotNo": {"full": "0"},
+        "image": {"url": "https://images1.bonhams.com/image?src=Images/live/2026-06/23/25829892-4-27.jpg"},
+    }
+    assert bh._to_lot(hit_bug).to_row()["reserve_status"] == "no-reserve"
+
+    # 'Refer to department' -> 0/0 estimates collapse to None (lot still valid)
+    hit_jag = {
+        "id": "6170637", "auctionId": "31959", "auctionType": "PUBLIC",
+        "slug": "1951-jaguar-xk120-roadster-chassis-no-670636",
+        "title": "1951 Jaguar XK120 Roadster Chassis no. 670636", "styledDescription": "",
+        "country": {"name": "United States"}, "currency": {"iso_code": "USD"},
+        "price": {"estimateLow": 0, "estimateHigh": 0}, "lotNo": {"full": "0"},
+        "biddableFrom": {"timestamp": 1786640400}, "auctionEndDate": {"timestamp": 1786690799},
+        "flags": {"isWithoutReserve": True},
+        "image": {"url": "https://images2.bonhams.com/image?src=Images/live/2026-06/22/x.jpg"},
+    }
+    rj = bh._to_lot(hit_jag).to_row()
+    assert rj.get("estimate_low") is None and rj.get("estimate_high") is None, rj
+    assert rj["currency"] == "USD" and rj["make"] == "Jaguar", rj
+
+    # PRIAUC private sale: year-2100 'biddableFrom' sentinel -> no dates + "Private Sales" name
+    hit_priv = {
+        "id": "6148273", "auctionId": "26417", "auctionType": "PRIAUC",
+        "slug": "1973-ferrari-365-gtb4-daytona-chassis-no-16309",
+        "title": "1973 Ferrari 365 GTB/4 Daytona Chassis no. 16309", "styledDescription": "",
+        "country": {"name": "United Kingdom"}, "currency": {"iso_code": "GBP"},
+        "price": {"estimateLow": 0, "estimateHigh": 0}, "lotNo": {"full": "0"},
+        "biddableFrom": {"timestamp": 4133941200}, "auctionEndDate": {"timestamp": 4133980799},
+        "flags": {"isWithoutReserve": False},
+        "image": {"url": "https://images1.bonhams.com/image?src=Images/live/2026-05/05/x.jpg"},
+    }
+    rp = bh._to_lot(hit_priv).to_row()
+    assert rp["make"] == "Ferrari" and rp["model"] == "365 GTB/4 Daytona", rp
+    assert rp["auction_event_name"] == "Private Sales", rp
+    assert rp.get("auction_start_date") is None and rp.get("auction_end_date") is None, rp
+
+    # exceptionalResults -> sold comps (hammerPremium = inc-premium realized price)
+    ex_bentley = {
+        "saleNo": 27656, "lotNo": "135", "saleLotNoUnique": 5562058,
+        "lotName": "<I>Well-known car, extensively toured</I><BR /><B>1929 Bentley 4½ Liter Tourer<BR />"
+                   "Coachwork in the style of Vanden Plas</B><BR />Chassis no. FB 3320<BR />Engine no. FB 3322",
+        "imageURL": "https://images2.bonhams.com/image?src=Images/live/2022-05/15/25213302-1-1.jpg",
+        "imageURLParams": "top=0.084444444444&left=0.136666666666",
+        "hammerPrice": 545000, "hammerPremium": 604500, "currencySymbol": "US$",
+    }
+    ex_alfa = {                                                   # hammerPremium 0 -> unsold -> dropped
+        "saleNo": 27509, "lotNo": "78", "saleLotNoUnique": 5570894,
+        "lotName": "<b>1974 Alfa Romeo TIPO 33 TT 12 </b><br /> Chassis no. 11512.007",
+        "imageURL": "https://images2.bonhams.com/image?src=Images/live/2022-06/09/x.jpg",
+        "imageURLParams": "", "hammerPrice": 0, "hammerPremium": 0, "currencySymbol": "US$",
+    }
+    rc = bh._to_comp(ex_bentley).to_row()
+    assert rc["external_lot_id"] == "bonhams:5562058", rc
+    assert rc["year"] == 1929 and rc["make"] == "Bentley" and rc["model"] == "4½ Liter Tourer", rc
+    assert rc["current_bid"] == 604500.0 and rc["currency"] == "USD", rc
+    assert rc["status"] == "sold" and rc["chassis"] == "FB 3320", rc
+    assert rc["auction_end_date"].startswith("2022-05-15"), rc   # date derived from image path
+    assert rc["source_url"] == "https://cars.bonhams.com/auction/27656/lot/135/", rc
+    assert bh._to_comp(ex_alfa) is None, "hammerPremium 0 must be filtered out"
+
+    # end-to-end collect(): parse the blob, attach comps; run() routes sold->comps
+    payload = {"props": {"pageProps": {
+        "lots": {"found": 3, "nbPages": 1, "hits": [hit_aston, hit_merc, hit_bug]},
+        "department": {"exceptionalResults": [ex_bentley, ex_alfa]},
+    }}}
+    class _BResp:
+        status_code = 200
+        def __init__(self, text): self.text = text
+    def _bonhams_fake_get(url, headers=None):
+        return _BResp('<!doctype html><html><body>'
+                      '<script id="__NEXT_DATA__" type="application/json">'
+                      + json.dumps(payload) + '</script></body></html>')
+    fb = Fetcher(respect_robots=False)
+    fb.get = _bonhams_fake_get                                    # type: ignore[assignment]
+    out = bh.collect(fb)
+    by_id = {l.external_lot_id: l for l in out}
+    assert "bonhams:6172587" in by_id and "bonhams:6156079" in by_id, sorted(by_id)
+    assert by_id["bonhams:6172587"].status == "upcoming", "preview lots stay on the board"
+    assert "bonhams:5562058" in by_id and by_id["bonhams:5562058"].status == "sold", sorted(by_id)
+    assert "bonhams:5570894" not in by_id, "unsold record (premium 0) must be dropped"
+    comps = sold_sales_rows(out)
+    assert any(c["external_id"] == "bonhams:5562058" and c["sold_price"] == 604500.0
+               and c["make"] == "Bentley" and c["sold_date"] == "2022-05-15" for c in comps), comps
+    # hot-refresh parse() resolves a lot by the numeric id in its preview-lot URL
+    bh2 = BonhamsCarsAdapter()
+    fb2 = Fetcher(respect_robots=False)
+    fb2.get = _bonhams_fake_get                                   # type: ignore[assignment]
+    ref = bh2.parse("https://cars.bonhams.com/auction/31857/preview-lot/6172587/1936-aston-martin/", fb2)
+    assert ref and ref.external_lot_id == "bonhams:6172587", ref
     print("    ok")
 
     print("\nALL SELF-TESTS PASSED ✓")

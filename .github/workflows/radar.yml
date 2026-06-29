@@ -37,14 +37,15 @@ jobs:
         # Pin specific sales with RADAR_RM_AUCTIONS: "tc26,mo26" if ever needed.
         run: python radar_worker.py --source rmsothebys
 
-      - name: Ingest The Market by Bonhams
+      - name: Ingest Bonhams Cars
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        # Online house (Nuxt /api/listings/*). One run pulls the live board plus
-        # recent results (-> sales_history comps). Runs BEFORE harvest so any
-        # just-closed lot is already finalized from the results feed.
-        run: python radar_worker.py --source themarket
+        # Live house (cars.bonhams.com __NEXT_DATA__ SSR, no auth). One run pulls
+        # every upcoming/preview lot across its open sales plus the department's
+        # record-sale highlights (-> sales_history comps). Live lots aren't
+        # online-harvested, so the harvest pass below is a no-op for this source.
+        run: python radar_worker.py --source bonhamscars
 
       - name: Harvest results (closed online lots -> comps)
         env:

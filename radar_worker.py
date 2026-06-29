@@ -481,8 +481,12 @@ class Fetcher:
             time.sleep(wait)
         self._last = time.monotonic()
 
-    def get(self, url: str, headers: Optional[dict] = None) -> Optional[requests.Response]:
-        if not self._allowed(url):
+    def get(self, url: str, headers: Optional[dict] = None,
+            ignore_robots: bool = False) -> Optional[requests.Response]:
+        # ignore_robots is an opt-in, per-call override for a single source that
+        # has consciously decided a specific public endpoint is fine to read
+        # (see BonhamsCarsAdapter). Default False keeps every other caller polite.
+        if not ignore_robots and not self._allowed(url):
             log.warning("robots.txt disallows %s — skipping", url)
             return None
         for attempt in range(1, MAX_RETRIES + 1):
@@ -1689,7 +1693,12 @@ class BonhamsCarsAdapter(SourceAdapter):
     # ---- fetch + extract the embedded Next.js page data --------------------
     def _next_data(self, fetcher: Fetcher, page: int) -> Optional[dict]:
         url = self.SITE + self.GRID + (f"?page={page}" if page > 1 else "")
-        resp = fetcher.get(url)
+        # Scoped robots.txt exemption — deliberate, and limited to this source.
+        # cars.bonhams.com/robots.txt disallows /cars/, but what we read is the
+        # page's OWN server-rendered __NEXT_DATA__: public auction listings, one
+        # GET per page, every 2h, no auth. The global default still honors
+        # robots.txt, so BaT / RM / any future adapter stay polite automatically.
+        resp = fetcher.get(url, ignore_robots=True)
         if not resp:
             return None
         m = NEXT_DATA_RE.search(resp.text)
@@ -2717,7 +2726,7 @@ def selftest() -> None:
     class _BResp:
         status_code = 200
         def __init__(self, text): self.text = text
-    def _bonhams_fake_get(url, headers=None):
+    def _bonhams_fake_get(url, headers=None, ignore_robots=False):
         return _BResp('<!doctype html><html><body>'
                       '<script id="__NEXT_DATA__" type="application/json">'
                       + json.dumps(payload) + '</script></body></html>')
